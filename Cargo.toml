@@ -2,5 +2,17 @@
 name = "tokio-events"
 version = "0.1.0"
 edition = "2021"
+authors = ["Abhishek Khushal Harde <akharde1998@gmail.com>"]
+description = "A modern, type-safe async event bus for Rust applications"
+repository = "https://github.com/abhiyana/tokio-events"
+license = "MIT OR Apache-2.0"
+keywords = ["async", "events", "event-bus", "tokio", "pubsub"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["serde"] }

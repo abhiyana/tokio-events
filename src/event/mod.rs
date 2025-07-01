@@ -118,6 +118,7 @@ pub trait HasPriority {
 /// This is useful for system-wide notifications.
 #[derive(Debug, Clone)]
 pub struct BroadcastEvent {
+    /// The message to be broadcast to all subscribers.
     pub message: String,
 }
 

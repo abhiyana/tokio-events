@@ -184,7 +184,7 @@ impl HashingWorkerPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Event, EventMetadata};
+    use crate::{Event};
     use std::sync::atomic::{AtomicUsize, Ordering};
     
     #[derive(Debug, Clone)]

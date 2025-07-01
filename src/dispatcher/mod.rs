@@ -5,8 +5,6 @@
 
 use crate::{EventEnvelope, Result};
 use async_trait::async_trait;
-use std::sync::Arc;
-use tracing::{debug, info, trace};
 
 pub mod channel;
 pub mod worker;

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 /// A channel-based event dispatcher.
 ///

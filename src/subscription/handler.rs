@@ -2,7 +2,7 @@
 
 use crate::{Error, Event, EventEnvelope, Result};
 use async_trait::async_trait;
-use std::fmt::{self, Debug};
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
 /// Trait for event handlers that can process events asynchronously.
 #[async_trait]
-pub trait EventHandler: Send + Sync  + 'static {
+pub trait EventHandler: Send + Sync + 'static {
     /// Process an event envelope
     async fn handle(&self, envelope: &EventEnvelope) -> Result<()>;
 
@@ -28,7 +28,7 @@ pub trait EventHandler: Send + Sync  + 'static {
 }
 
 /// A typed event handler that processes specific event types.
-pub trait TypedHandler<T: Event>: Send + Sync  + 'static {
+pub trait TypedHandler<T: Event>: Send + Sync + 'static {
     /// Handle a specific event type
     fn handle_typed(&self, event: &T) -> HandlerFuture;
 
@@ -39,6 +39,7 @@ pub trait TypedHandler<T: Event>: Send + Sync  + 'static {
 }
 
 /// Adapter that converts a TypedHandler into an EventHandler
+#[derive(Debug)]
 pub struct TypedHandlerAdapter<T: Event, H: TypedHandler<T>> {
     handler: Arc<H>,
     _phantom: std::marker::PhantomData<T>,
@@ -72,6 +73,7 @@ impl<T: Event, H: TypedHandler<T>> EventHandler for TypedHandlerAdapter<T, H> {
 }
 
 /// A function-based event handler using closures.
+#[derive(Debug)]
 pub struct FunctionHandler<T, F, Fut>
 where
     T: Event,
@@ -132,6 +134,7 @@ where
 }
 
 /// A handler that can filter events before processing
+
 pub struct FilteredHandler<H: EventHandler> {
     inner: H,
     filter: Box<dyn Fn(&EventEnvelope) -> bool + Send + Sync>,
@@ -168,6 +171,7 @@ impl<H: EventHandler> EventHandler for FilteredHandler<H> {
 }
 
 /// A handler that wraps errors and continues processing
+
 pub struct ErrorWrappingHandler<H: EventHandler> {
     inner: H,
     error_handler: Box<dyn Fn(Error) + Send + Sync>,
@@ -204,11 +208,15 @@ impl<H: EventHandler> EventHandler for ErrorWrappingHandler<H> {
 }
 
 /// Handler statistics for monitoring
-#[derive( Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct HandlerStats {
+    /// Number of events successfully processed.
     pub events_processed: u64,
+    /// Number of events that failed to process.
     pub events_failed: u64,
+    /// Total processing time in milliseconds.
     pub total_processing_time_ms: u64,
+    /// The last error encountered, if any.
     pub last_error: Option<String>,
 }
 

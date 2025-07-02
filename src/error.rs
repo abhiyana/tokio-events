@@ -89,6 +89,12 @@ pub struct ErrorContext {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+impl Default for ErrorContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ErrorContext {
     /// Create a new error context
     pub fn new() -> Self {

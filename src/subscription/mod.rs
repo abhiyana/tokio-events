@@ -207,7 +207,7 @@ impl SubscriptionManager {
             .filter_map(|sub_entry| {
                 self.subscriptions
                     .get(&sub_entry.id)
-                    .map(|sub_data| (sub_entry.id, sub_data.handler.clone().into()))
+                    .map(|sub_data| (sub_entry.id, sub_data.handler.clone()))
             })
             .collect();
 

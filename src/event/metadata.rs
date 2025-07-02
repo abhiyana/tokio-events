@@ -124,6 +124,12 @@ pub struct MetadataBuilder {
     metadata: EventMetadata,
 }
 
+impl Default for MetadataBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetadataBuilder {
     /// Create a new metadata builder
     pub fn new() -> Self {

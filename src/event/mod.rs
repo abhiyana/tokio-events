@@ -85,10 +85,12 @@ pub trait SerializableEvent: Event + serde::Serialize + serde::de::DeserializeOw
 ///
 /// Higher priority events are processed before lower priority ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default)]
 pub enum EventPriority {
     /// Lowest priority - processed last
     Low = 0,
     /// Normal priority - default for most events  
+    #[default]
     Normal = 1,
     /// High priority - processed before normal events
     High = 2,
@@ -96,11 +98,6 @@ pub enum EventPriority {
     Critical = 3,
 }
 
-impl Default for EventPriority {
-    fn default() -> Self {
-        EventPriority::Normal
-    }
-}
 
 /// Trait for events that have a priority.
 ///

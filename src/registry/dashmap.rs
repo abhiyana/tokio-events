@@ -59,7 +59,7 @@ impl EventRegistry for DashMapRegistry {
         // Add to subscriptions list
         self.subscriptions
             .entry(event_type)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(subscription.clone());
         
         debug!(
@@ -77,7 +77,7 @@ impl EventRegistry for DashMapRegistry {
         let event_type = self.subscription_to_type
             .remove(&subscription_id)
             .map(|(_, type_id)| type_id)
-            .ok_or_else(|| Error::SubscriptionNotFound { id: subscription_id })?;
+            .ok_or(Error::SubscriptionNotFound { id: subscription_id })?;
         
         // Remove from subscriptions list
         if let Some(mut subs) = self.subscriptions.get_mut(&event_type) {
@@ -135,7 +135,7 @@ impl EventRegistry for DashMapRegistry {
         
         let event_type = self.subscription_to_type
             .get(&subscription_id)
-            .ok_or_else(|| Error::SubscriptionNotFound { id: subscription_id })?;
+            .ok_or(Error::SubscriptionNotFound { id: subscription_id })?;
         
         if let Some(mut subs) = self.subscriptions.get_mut(&*event_type) {
             if let Some(sub) = subs.iter_mut().find(|s| s.id == subscription_id) {

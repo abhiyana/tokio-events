@@ -77,6 +77,7 @@ impl EventEnvelope {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     /// Try to extract the event as a specific type
     pub fn try_into_inner<T: Event>(self) -> Result<Arc<T>, Self> {
         if self.type_id == TypeId::of::<T>() {
@@ -130,6 +131,7 @@ impl fmt::Debug for EventEnvelope {
 }
 
 /// Builder for creating event envelopes with custom configuration
+#[derive(Debug)]
 pub struct EnvelopeBuilder<T: Event> {
     event: T,
     metadata: EventMetadata,
@@ -194,7 +196,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct TestEvent {
         id: u64,
-        message: String,
+        _message: String,
     }
 
     impl Event for TestEvent {
@@ -213,7 +215,7 @@ mod tests {
     fn test_envelope_creation() {
         let event = TestEvent {
             id: 123,
-            message: "test".to_string(),
+            _message: "test".to_string(),
         };
 
         let envelope = EventEnvelope::new(event.clone());
@@ -227,7 +229,7 @@ mod tests {
     fn test_envelope_downcast() {
         let event = TestEvent {
             id: 456,
-            message: "downcast test".to_string(),
+            _message: "downcast test".to_string(),
         };
 
         let envelope = EventEnvelope::new(event);
@@ -244,7 +246,7 @@ mod tests {
         let correlation_id = Uuid::max();
         let event = TestEvent {
             id: 789,
-            message: "builder test".to_string(),
+            _message: "builder test".to_string(),
         };
 
         let envelope = EnvelopeBuilder::new(event)
@@ -262,13 +264,13 @@ mod tests {
     fn test_envelope_chaining() {
         let parent_event = TestEvent {
             id: 1,
-            message: "parent".to_string(),
+            _message: "parent".to_string(),
         };
         let parent_envelope = EventEnvelope::new(parent_event);
 
         let child_event = TestEvent {
             id: 2,
-            message: "child".to_string(),
+            _message: "child".to_string(),
         };
         let child_envelope = parent_envelope.chain(child_event);
 

@@ -91,10 +91,10 @@ pub mod bus;
 // pub mod middleware;
 
 // Re-export commonly used types
+pub use bus::{EventBus, EventBusBuilder};
 pub use error::{Error, Result};
 pub use event::{Event, EventEnvelope, EventMetadata, EventPriority, HasPriority};
-pub use subscription::{SubscriptionHandle, EventHandler};
-pub use bus::{EventBus, EventBusBuilder};
+pub use subscription::{EventHandler, SubscriptionHandle};
 
 // Will be added when implemented:
 // pub use metrics::Metrics;
@@ -110,8 +110,8 @@ pub use bus::{EventBus, EventBusBuilder};
 /// use tokio_events::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::event::{Event, EventPriority, HasPriority};
-    pub use crate::error::{Error, Result};
     pub use crate::bus::{EventBus, EventBusBuilder};
+    pub use crate::error::{Error, Result};
+    pub use crate::event::{Event, EventPriority, HasPriority};
     pub use crate::subscription::SubscriptionHandle;
 }

@@ -16,6 +16,7 @@ use tracing::{error, info, trace, warn};
 /// This dispatcher uses Tokio channels to queue events and process them
 /// asynchronously. It provides backpressure and can be configured to
 /// drop events when the queue is full.
+#[allow(missing_debug_implementations)]
 pub struct ChannelDispatcher {
     /// Configuration
     config: DispatcherConfig,
@@ -196,7 +197,7 @@ impl EventDispatcher for ChannelDispatcher {
         // Wait for worker to finish
         if let Some(handle) = self.worker_handle.take() {
             // Give it some time to finish processing
-            tokio::time::timeout(tokio::time::Duration::from_secs(5), handle)
+            let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle)
                 .await
                 .map_err(|_| Error::internal("Worker shutdown timeout"))?;
         }
@@ -267,7 +268,7 @@ impl EventDispatcher for ChannelDispatcher {
 mod tests {
     use super::*;
     use crate::registry::DashMapRegistry;
-    use crate::{Event, EventMetadata};
+    use crate::Event;
 
     #[derive(Debug, Clone)]
     struct TestEvent {

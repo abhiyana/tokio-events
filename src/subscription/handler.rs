@@ -134,11 +134,11 @@ where
 }
 
 /// A handler that can filter events before processing
-
+#[allow(missing_debug_implementations)]
 pub struct FilteredHandler<H: EventHandler> {
     inner: H,
     filter: Box<dyn Fn(&EventEnvelope) -> bool + Send + Sync>,
-    filter_name: String,
+    _filter_name: String,
 }
 
 impl<H: EventHandler> FilteredHandler<H> {
@@ -150,7 +150,7 @@ impl<H: EventHandler> FilteredHandler<H> {
         Self {
             inner,
             filter: Box::new(filter),
-            filter_name: filter_name.into(),
+            _filter_name: filter_name.into(),
         }
     }
 }
@@ -171,7 +171,7 @@ impl<H: EventHandler> EventHandler for FilteredHandler<H> {
 }
 
 /// A handler that wraps errors and continues processing
-
+#[allow(missing_debug_implementations)]
 pub struct ErrorWrappingHandler<H: EventHandler> {
     inner: H,
     error_handler: Box<dyn Fn(Error) + Send + Sync>,

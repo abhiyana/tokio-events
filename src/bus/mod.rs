@@ -55,6 +55,7 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 ///     Ok(())
 /// }
 /// ```
+#[allow(missing_debug_implementations)]
 pub struct EventBus {
     pub(crate) config: EventBusConfig,
     pub(crate) registry: Arc<dyn EventRegistry>,
@@ -243,7 +244,7 @@ impl EventBus {
             dispatcher.stop().await
         });
 
-        if let Err(_) = dispatcher_shutdown.await {
+        if dispatcher_shutdown.await.is_err() {
             warn!("Dispatcher shutdown timed out");
         }
 

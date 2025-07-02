@@ -20,11 +20,17 @@ pub enum Error {
 
     /// Event not found in registry
     #[error("Event type not registered: {type_name}")]
-    EventNotRegistered { type_name: &'static str },
+    EventNotRegistered {
+        /// The name of the event type that was not registered
+        type_name: &'static str,
+    },
 
     /// Subscription not found
     #[error("Subscription not found: {id}")]
-    SubscriptionNotFound { id: Uuid },
+    SubscriptionNotFound {
+        /// The unique identifier of the subscription that was not found
+        id: Uuid,
+    },
 
     /// Event handler error
     #[error("Handler error: {0}")]
@@ -73,19 +79,20 @@ impl Error {
 
     /// Check if this is a channel-related error
     pub fn is_channel_error(&self) -> bool {
-        matches!(
-            self,
-            Error::ChannelSendError | Error::ChannelReceiveError
-        )
+        matches!(self, Error::ChannelSendError | Error::ChannelReceiveError)
     }
 }
 
 /// Error context for debugging
 #[derive(Debug)]
 pub struct ErrorContext {
+    /// The unique identifier of the event, if available
     pub event_id: Option<Uuid>,
+    /// The type name of the event, if available
     pub event_type: Option<&'static str>,
+    /// The name of the handler, if available
     pub handler_name: Option<String>,
+    /// The timestamp when the error context was created
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -163,7 +170,7 @@ mod tests {
             .with_event_id(Uuid::max())
             .with_event_type("TestEvent")
             .with_handler("test_handler");
-        
+
         let display = ctx.to_string();
         assert!(display.contains("TestEvent"));
         assert!(display.contains("test_handler"));

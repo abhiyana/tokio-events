@@ -8,25 +8,25 @@ use std::time::Duration;
 pub struct EventBusConfig {
     /// Dispatcher configuration
     pub dispatcher: DispatcherConfig,
-    
+
     /// Enable event deduplication
     pub enable_deduplication: bool,
-    
+
     /// Deduplication window (how long to remember event IDs)
     pub deduplication_window: Duration,
-    
+
     /// Maximum number of retry attempts for failed handlers
     pub max_retries: u32,
-    
+
     /// Retry backoff base duration
     pub retry_backoff: Duration,
-    
+
     /// Enable event ordering by correlation ID
     pub enable_ordering: bool,
-    
+
     /// Shutdown timeout
     pub shutdown_timeout: Duration,
-    
+
     /// Enable tracing
     pub enable_tracing: bool,
 }
@@ -51,49 +51,49 @@ impl EventBusConfig {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Enable event deduplication
     pub fn enable_deduplication(mut self, enable: bool) -> Self {
         self.enable_deduplication = enable;
         self
     }
-    
+
     /// Set deduplication window
     pub fn deduplication_window(mut self, window: Duration) -> Self {
         self.deduplication_window = window;
         self
     }
-    
+
     /// Set maximum retry attempts
     pub fn max_retries(mut self, retries: u32) -> Self {
         self.max_retries = retries;
         self
     }
-    
+
     /// Set retry backoff duration
     pub fn retry_backoff(mut self, backoff: Duration) -> Self {
         self.retry_backoff = backoff;
         self
     }
-    
+
     /// Enable event ordering
     pub fn enable_ordering(mut self, enable: bool) -> Self {
         self.enable_ordering = enable;
         self
     }
-    
+
     /// Set shutdown timeout
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
         self
     }
-    
+
     /// Enable tracing
     pub fn enable_tracing(mut self, enable: bool) -> Self {
         self.enable_tracing = enable;
         self
     }
-    
+
     /// Configure dispatcher
     pub fn dispatcher_config<F>(mut self, f: F) -> Self
     where
@@ -118,7 +118,7 @@ impl EventBusConfig {
             .enable_deduplication(false)
             .max_retries(1)
     }
-    
+
     /// Configuration for reliable processing
     pub fn reliable() -> Self {
         Self::default()
@@ -131,7 +131,7 @@ impl EventBusConfig {
             .max_retries(5)
             .retry_backoff(Duration::from_millis(500))
     }
-    
+
     /// Configuration for ordered processing
     pub fn ordered() -> Self {
         Self::default()
@@ -142,7 +142,7 @@ impl EventBusConfig {
             .enable_ordering(true)
             .enable_deduplication(true)
     }
-    
+
     /// Configuration for testing
     pub fn test() -> Self {
         Self::default()

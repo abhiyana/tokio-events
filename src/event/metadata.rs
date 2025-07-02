@@ -12,25 +12,25 @@ use uuid::Uuid;
 pub struct EventMetadata {
     /// Unique identifier for this event instance
     pub event_id: Uuid,
-    
+
     /// Timestamp when the event was created
     pub timestamp: DateTime<Utc>,
-    
+
     /// Correlation ID for tracing related events
     pub correlation_id: Option<Uuid>,
-    
+
     /// Causation ID - the event that caused this event
     pub causation_id: Option<Uuid>,
-    
+
     /// Source that generated this event
     pub source: Option<String>,
-    
+
     /// User ID associated with this event
     pub user_id: Option<String>,
-    
+
     /// Session ID for tracking user sessions
     pub session_id: Option<String>,
-    
+
     /// Custom metadata as key-value pairs
     pub custom: HashMap<String, String>,
 }
@@ -102,7 +102,7 @@ impl EventMetadata {
     pub fn chain_from(&mut self, parent: &EventMetadata) {
         self.causation_id = Some(parent.event_id);
         self.correlation_id = parent.correlation_id.or(Some(parent.event_id));
-        
+
         // Inherit user and session context
         if self.user_id.is_none() {
             self.user_id = parent.user_id.clone();
@@ -120,6 +120,7 @@ impl Default for EventMetadata {
 }
 
 /// Builder for EventMetadata
+#[allow(missing_debug_implementations)]
 pub struct MetadataBuilder {
     metadata: EventMetadata,
 }
@@ -205,7 +206,10 @@ mod tests {
         assert_eq!(metadata.correlation_id, Some(correlation_id));
         assert_eq!(metadata.source, Some("test-service".to_string()));
         assert_eq!(metadata.user_id, Some("user123".to_string()));
-        assert_eq!(metadata.get_custom("environment"), Some(&"test".to_string()));
+        assert_eq!(
+            metadata.get_custom("environment"),
+            Some(&"test".to_string())
+        );
     }
 
     #[test]

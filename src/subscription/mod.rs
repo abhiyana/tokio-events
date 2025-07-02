@@ -25,6 +25,7 @@ struct SubscriptionData {
 }
 
 /// Manages all active subscriptions in the event bus.
+#[allow(missing_debug_implementations)]
 pub struct SubscriptionManager {
     /// Registry for type-to-subscription mapping
     registry: Arc<dyn EventRegistry>,
@@ -281,7 +282,9 @@ impl SubscriptionManager {
 /// Statistics about the subscription manager
 #[derive(Debug, Clone)]
 pub struct SubscriptionStats {
+    /// The number of currently active subscriptions.
     pub active_subscriptions: usize,
+    /// The total number of event types registered.
     pub total_event_types: usize,
 }
 

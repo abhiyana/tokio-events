@@ -84,8 +84,7 @@ pub trait SerializableEvent: Event + serde::Serialize + serde::de::DeserializeOw
 /// Priority levels for event handling.
 ///
 /// Higher priority events are processed before lower priority ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum EventPriority {
     /// Lowest priority - processed last
     Low = 0,
@@ -97,7 +96,6 @@ pub enum EventPriority {
     /// Critical priority - processed immediately
     Critical = 3,
 }
-
 
 /// Trait for events that have a priority.
 ///
@@ -160,6 +158,7 @@ mod tests {
         let downcast = any.downcast_ref::<TestEvent>();
         assert!(downcast.is_some());
         assert_eq!(downcast.unwrap().id, 123);
+        assert_eq!(downcast.unwrap().data, "test");
     }
 
     #[test]

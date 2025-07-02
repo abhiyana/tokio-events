@@ -3,7 +3,6 @@
 A modern, type-safe async event bus for Rust applications built on Tokio.
 
 
-
 ## Quick Example
 
 ```rust
@@ -22,3 +21,4 @@ bus.publish(UserRegistered {
     id: 123,
     email: "user@example.com".into(),
 }).await?;
+

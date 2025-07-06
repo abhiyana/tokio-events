@@ -22,4 +22,30 @@ bus.publish(UserRegistered {
     id: 123,
     email: "user@example.com".into(),
 }).await?;
+```
 
+# Core Components
+
+## 1. EventBus – The Main API
+- Single instance shared across your application  
+- Provides `publish()` and `subscribe()` methods  
+- Manages component lifecycle  
+
+## 2. Registry – Type Mapping
+- Maps event types to their subscribers  
+- Uses `TypeId` for type-safe routing  
+- Thread-safe using `DashMap`  
+
+## 3. Dispatcher – Event Queue
+- MPSC channel for queuing events  
+- Worker thread processes events  
+- Configurable queue size and backpressure  
+
+## 4. Subscription Manager – Handler Execution
+- Stores active handlers  
+- Spawns async tasks for parallel execution  
+- Manages subscription lifecycle  
+
+
+
+![image](https://github.com/user-attachments/assets/174c8603-747a-4014-96e7-0d9f04780cc8)

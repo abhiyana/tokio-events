@@ -48,4 +48,4 @@ bus.publish(UserRegistered {
 
 
 
-![image](https://github.com/user-attachments/assets/174c8603-747a-4014-96e7-0d9f04780cc8)
+![image](https://github.com/abhiyana/tokio-events/blob/main/docs/eventflow.png)

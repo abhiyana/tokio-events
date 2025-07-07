@@ -2,7 +2,7 @@
 
 A modern, type-safe async event bus for Rust applications built on Tokio.
 
-![image](https://github.com/user-attachments/assets/0abac6a2-0e3b-48b9-bad9-00ba9010400b)
+![image](https://github.com/abhiyana/tokio-events/blob/main/docs/eventhighlevel.png)
 
 ## Quick Example
 

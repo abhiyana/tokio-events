@@ -49,3 +49,23 @@ bus.publish(UserRegistered {
 
 
 ![image](https://github.com/abhiyana/tokio-events/blob/main/docs/eventflow.png)
+```
+publish(UserRegistered) 
+    ↓
+Create EventEnvelope (type erasure)
+    ↓
+Send to channel (Arc wrap)
+    ↓
+Worker receives
+    ↓
+Lookup by TypeId → Find handlers
+    ↓
+Spawn tasks (parallel)
+    ↓
+Each handler:
+  - Downcast to UserRegistered
+  - Execute user function
+  - Update metrics
+    ↓
+Cleanup (Arc refcount → 0)
+```

@@ -8,9 +8,10 @@ repository = "https://github.com/abhiyana/tokio-events"
 license = "MIT OR Apache-2.0"
 keywords = ["async", "events", "event-bus", "tokio", "pubsub"]
 categories = ["asynchronous", "concurrency"]
+documentation = "https://docs.rs/tokio-events"
 
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.46.1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }

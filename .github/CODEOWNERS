@@ -1,0 +1,23 @@
+# Global ownership - replace with actual maintainer GitHub usernames
+* @abhiyana
+
+# Specific file ownership
+/Cargo.toml @abhiyana
+/Cargo.lock @abhiyana
+/.github/ @abhiyana
+/docs/ @abhiyana
+
+# Source code ownership
+/src/ @abhiyana
+
+# CI/CD ownership
+/.github/workflows/ @abhiyana
+/.github/dependabot.yml @abhiyana
+
+# Documentation ownership
+/README.md @abhiyana
+/CLAUDE.md @abhiyana
+/docs/ @abhiyana
+
+# Examples ownership
+/examples/ @abhiyana

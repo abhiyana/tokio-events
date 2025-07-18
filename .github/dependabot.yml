@@ -1,0 +1,92 @@
+version: 2
+updates:
+  # Enable version updates for Cargo (Rust)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "abhiyana"  # Replace with actual maintainer GitHub username
+    assignees:
+      - "abhiyana"  # Replace with actual maintainer GitHub username
+    commit-message:
+      prefix: "deps"
+      prefix-development: "dev-deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+    allow:
+      # Allow patch and minor updates for production dependencies
+      - dependency-type: "direct:production"
+        update-type: "version-update:semver-patch"
+      - dependency-type: "direct:production"
+        update-type: "version-update:semver-minor"
+      # Allow all updates for development dependencies
+      - dependency-type: "direct:development"
+      # Allow indirect dependencies (transitive)
+      - dependency-type: "indirect"
+    ignore:
+      # Ignore specific packages if needed
+      # - dependency-name: "some-package"
+      #   versions: ["1.x"]
+    groups:
+      # Group tokio ecosystem updates together
+      tokio:
+        patterns:
+          - "tokio*"
+          - "tower*"
+          - "hyper*"
+          - "tonic*"
+      # Group serde ecosystem updates together
+      serde:
+        patterns:
+          - "serde*"
+      # Group async ecosystem updates together
+      async:
+        patterns:
+          - "async-*"
+          - "futures*"
+      # Group testing dependencies together
+      testing:
+        patterns:
+          - "*test*"
+          - "criterion*"
+          - "proptest*"
+          - "quickcheck*"
+        dependency-type: "development"
+      # Group development tools together
+      dev-tools:
+        patterns:
+          - "cargo-*"
+        dependency-type: "development"
+
+  # Enable version updates for GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "abhiyana"  # Replace with actual maintainer GitHub username
+    assignees:
+      - "abhiyana"  # Replace with actual maintainer GitHub username
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "ci"
+    groups:
+      # Group all GitHub Actions updates together
+      github-actions:
+        patterns:
+          - "*"

@@ -1,0 +1,252 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get version
+      id: get_version
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Verify version in Cargo.toml
+      run: |
+        VERSION="${{ steps.get_version.outputs.version }}"
+        CARGO_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
+          echo "Error: Tag version ($VERSION) doesn't match Cargo.toml version ($CARGO_VERSION)"
+          exit 1
+        fi
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Extract changelog for this version
+        if [[ -f CHANGELOG.md ]]; then
+          # Get changelog between previous tag and current
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          if [[ -n "$PREV_TAG" ]]; then
+            echo "## Changes since $PREV_TAG" > release_notes.md
+            git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD >> release_notes.md
+          else
+            echo "## Initial Release" > release_notes.md
+            git log --pretty=format:"- %s (%h)" >> release_notes.md
+          fi
+        else
+          echo "## Release v${{ steps.get_version.outputs.version }}" > release_notes.md
+          echo "" >> release_notes.md
+          echo "See commit history for detailed changes." >> release_notes.md
+        fi
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.get_version.outputs.version }}
+        release_name: Release v${{ steps.get_version.outputs.version }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: ${{ contains(steps.get_version.outputs.version, '-') }}
+
+  test-release:
+    name: Test Release Build
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: release-${{ runner.os }}-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build release
+      run: cargo build --release --all-features
+
+    - name: Run tests
+      run: cargo test --release --all-features
+
+    - name: Package crate
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo package --allow-dirty
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: [create-release, test-release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: publish-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Login to crates.io
+      run: cargo login ${{ secrets.CRATES_IO_TOKEN }}
+
+    - name: Publish to crates.io
+      run: cargo publish --no-verify
+
+  build-artifacts:
+    name: Build Release Artifacts
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: tokio-events-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: tokio-events-windows-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: tokio-events-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: tokio-events-macos-aarch64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: artifacts-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build examples for release
+      run: |
+        cargo build --release --target ${{ matrix.target }} --examples
+        mkdir artifacts
+
+    - name: Prepare artifacts (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        cp target/${{ matrix.target }}/release/examples/test artifacts/
+        cp README.md LICENSE* artifacts/
+        tar -czf ${{ matrix.artifact_name }}.tar.gz -C artifacts .
+
+    - name: Prepare artifacts (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        copy target\${{ matrix.target }}\release\examples\test.exe artifacts\
+        copy README.md artifacts\
+        if exist LICENSE* copy LICENSE* artifacts\
+        7z a ${{ matrix.artifact_name }}.zip ./artifacts/*
+
+    - name: Upload Release Asset (Unix)
+      if: runner.os != 'Windows'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./${{ matrix.artifact_name }}.tar.gz
+        asset_name: ${{ matrix.artifact_name }}.tar.gz
+        asset_content_type: application/gzip
+
+    - name: Upload Release Asset (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./${{ matrix.artifact_name }}.zip
+        asset_name: ${{ matrix.artifact_name }}.zip
+        asset_content_type: application/zip
+
+  update-version:
+    name: Update Development Version
+    needs: [publish-crate]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Setup git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Bump version for development
+      run: |
+        # This is a placeholder for version bumping logic
+        # You might want to use a tool like cargo-edit or a custom script
+        echo "Next: Implement version bumping for development"
+        # cargo install cargo-edit
+        # cargo set-version --bump patch
+        # git add Cargo.toml
+        # git commit -m "Bump version for development"
+        # git push origin main

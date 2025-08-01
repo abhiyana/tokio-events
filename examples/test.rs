@@ -35,17 +35,17 @@ async fn main() {
 
     // Publish some events
     println!("Publishing events...");
-    bus.emit_and_wait(MyEvent {
+    bus.publish(MyEvent {
         message: "Hello!".into(),
     })
     .await
     .unwrap();
-    bus.emit_and_wait(MyEvent {
+    bus.publish(MyEvent {
         message: "World!".into(),
     })
     .await
     .unwrap();
-    bus.emit_and_wait(MyEvent {
+    bus.publish(MyEvent {
         message: "Event Bus is working!".into(),
     })
     .await

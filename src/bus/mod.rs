@@ -141,58 +141,6 @@ impl EventBus {
         self.subscription_manager.unsubscribe(handle).await
     }
 
-    /// Emit an event and wait for all handlers to complete
-    pub async fn emit_and_wait<T: Event>(&self, event: T) -> Result<()> {
-        if self.is_shutting_down.load(Ordering::Relaxed) {
-            return Err(Error::ShuttingDown);
-        }
-
-        // Create a tracking mechanism for this specific event
-        let metadata = EventMetadata::new();
-        let envelope = Arc::new(EventEnvelope::with_metadata(event, metadata));
-
-        // Get the number of active subscribers for this event type
-        let subscriber_count = self.registry.subscription_count(T::type_id());
-
-        if subscriber_count == 0 {
-            // No subscribers, just return
-            return Ok(());
-        }
-
-        // For now, we'll just dispatch normally and wait a bit
-        // In a full implementation, we'd modify the dispatcher to support completion tracking
-        self.dispatcher.dispatch((*envelope).clone()).await?;
-
-        // Wait for all handlers to complete or timeout
-        let timeout = tokio::time::Duration::from_secs(30);
-        let start = tokio::time::Instant::now();
-
-        while start.elapsed() < timeout {
-            // Check if all events have been processed
-            // This is still simplified - in production we'd track completions properly
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-            // For now, we just wait a reasonable amount of time
-            // A proper implementation would track handler completions
-            if start.elapsed() > tokio::time::Duration::from_millis(100) {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Emit an event and wait with a custom timeout
-    pub async fn emit_and_wait_timeout<T: Event>(
-        &self,
-        event: T,
-        timeout: std::time::Duration,
-    ) -> Result<()> {
-        tokio::time::timeout(timeout, self.emit_and_wait(event))
-            .await
-            .map_err(|_| Error::internal("Timeout waiting for handlers to complete"))?
-    }
-
     /// Get statistics about the event bus
     pub fn stats(&self) -> EventBusStats {
         EventBusStats {

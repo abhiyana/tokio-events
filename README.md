@@ -7,10 +7,9 @@ A modern, type-safe async event bus for Rust applications built on Tokio.
 ## Quick Example
 
 ```rust
-// Create an event bus
 let bus = EventBus::builder()
-    .with_metrics()
-    .build();
+    .build()
+    .await?;
 
 // Subscribe to events
 bus.subscribe(|event: UserRegistered| async {

@@ -6,7 +6,6 @@
 //!
 //! - **Type-safe** event publishing and subscription
 //! - **High performance** async-first design built on Tokio
-//! - **Async-first** design built on Tokio
 //! - **Flexible** subscription management
 //! - **Thread-safe** by default
 //!

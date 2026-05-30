@@ -181,7 +181,7 @@ mod tests {
     use super::*;
     use crate::Event;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     struct TestEvent;
 
     impl Event for TestEvent {
@@ -190,7 +190,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct AnotherEvent;
 
     impl Event for AnotherEvent {

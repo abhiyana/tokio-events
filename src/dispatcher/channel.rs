@@ -224,20 +224,22 @@ impl EventDispatcher for ChannelDispatcher {
                 .store(current_size as u64, Ordering::Relaxed);
         }
 
-        // Try to send
-        match self.sender.try_send(envelope) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                if self.config.drop_on_full {
+        if self.config.drop_on_full {
+            match self.sender.try_send(envelope) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => {
                     warn!("Event queue full, dropping event");
                     self.dispatch_errors.fetch_add(1, Ordering::Relaxed);
                     Ok(())
-                } else {
-                    Err(Error::internal("Event queue full"))
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    Err(Error::internal("Event channel closed"))
                 }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                Err(Error::internal("Event channel closed"))
+        } else {
+            match self.sender.send(envelope).await {
+                Ok(()) => Ok(()),
+                Err(_) => Err(Error::internal("Event channel closed")),
             }
         }
     }
@@ -252,13 +254,9 @@ impl EventDispatcher for ChannelDispatcher {
 
         DispatcherStats {
             events_dispatched,
-            queue_size: self.sender.capacity() - self.sender.max_capacity(),
+            queue_size: self.sender.max_capacity().saturating_sub(self.sender.capacity()),
             dispatch_errors: self.dispatch_errors.load(Ordering::Relaxed),
-            avg_dispatch_time_us: if events_dispatched > 0 {
-                total_time / events_dispatched
-            } else {
-                0
-            },
+            avg_dispatch_time_us: total_time.checked_div(events_dispatched).unwrap_or(0),
             max_queue_size: self.max_queue_size.load(Ordering::Relaxed) as usize,
         }
     }
@@ -270,7 +268,7 @@ mod tests {
     use crate::registry::DashMapRegistry;
     use crate::Event;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent {
         value: i32,
     }
@@ -301,7 +299,7 @@ mod tests {
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
 
-        subscription_manager
+        let _handle = subscription_manager
             .subscribe_fn::<TestEvent, _, _>(move |event| {
                 let counter = counter_clone.clone();
                 async move {

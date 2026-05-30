@@ -14,6 +14,9 @@ pub struct EventBusBuilder {
     config: EventBusConfig,
     registry: Option<Arc<dyn EventRegistry>>,
     custom_dispatcher: Option<Box<dyn EventDispatcher>>,
+    
+    #[cfg(feature = "persistence")]
+    redb: Option<Arc<redb::Database>>,
 }
 
 impl EventBusBuilder {
@@ -23,6 +26,8 @@ impl EventBusBuilder {
             config: EventBusConfig::default(),
             registry: None,
             custom_dispatcher: None,
+            #[cfg(feature = "persistence")]
+            redb: None,
         }
     }
 
@@ -56,6 +61,13 @@ impl EventBusBuilder {
         self
     }
 
+    /// Enable redb persistence for the event bus
+    #[cfg(feature = "persistence")]
+    pub fn with_redb(mut self, db: Arc<redb::Database>) -> Self {
+        self.redb = Some(db);
+        self
+    }
+
     /// Build with high-throughput configuration
     pub fn high_throughput(self) -> Self {
         self.config(EventBusConfig::high_throughput())
@@ -76,15 +88,28 @@ impl EventBusBuilder {
         info!("Building EventBus");
 
         // Create or use provided registry
+        #[cfg(not(feature = "persistence"))]
         let registry = self.registry.unwrap_or_else(|| {
             info!("Creating default DashMapRegistry");
             Arc::new(DashMapRegistry::with_capacity(100))
         });
 
+        #[cfg(feature = "persistence")]
+        let registry = if let Some(db) = &self.redb {
+            let base = Arc::new(DashMapRegistry::with_capacity(100));
+            Arc::new(crate::persistence::RedbRegistry::new(db.clone(), base)) as Arc<dyn EventRegistry>
+        } else {
+            self.registry.unwrap_or_else(|| {
+                info!("Creating default DashMapRegistry");
+                Arc::new(DashMapRegistry::with_capacity(100))
+            })
+        };
+
         // Create subscription manager
         let subscription_manager = Arc::new(SubscriptionManager::new(registry.clone()));
 
         // Create or use provided dispatcher
+        #[cfg(not(feature = "persistence"))]
         let mut dispatcher = if let Some(dispatcher) = self.custom_dispatcher {
             info!("Using custom dispatcher");
             dispatcher
@@ -94,6 +119,25 @@ impl EventBusBuilder {
                 self.config.dispatcher.clone(),
                 subscription_manager.clone(),
             ))
+        };
+
+        #[cfg(feature = "persistence")]
+        let mut dispatcher = if let Some(dispatcher) = self.custom_dispatcher {
+            info!("Using custom dispatcher");
+            dispatcher
+        } else if let Some(db) = &self.redb {
+            info!("Creating RedbDispatcher for persistence");
+            Box::new(crate::persistence::RedbDispatcher::new(
+                db.clone(),
+                self.config.dispatcher.clone(),
+                subscription_manager.clone(),
+            )) as Box<dyn EventDispatcher>
+        } else {
+            info!("Creating default ChannelDispatcher");
+            Box::new(ChannelDispatcher::new(
+                self.config.dispatcher.clone(),
+                subscription_manager.clone(),
+            )) as Box<dyn EventDispatcher>
         };
 
         // Start the dispatcher

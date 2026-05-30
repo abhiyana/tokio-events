@@ -38,3 +38,7 @@ macros = ["dep:tokio-events-macros"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[[example]]
+name = "persistent_bus"
+required-features = ["persistence"]

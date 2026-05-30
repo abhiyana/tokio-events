@@ -24,6 +24,9 @@ pub struct SubscriptionEntry {
 
     /// Number of events processed by this subscription
     pub events_processed: u64,
+
+    /// Optional durable name for persistent queues
+    pub durable_name: Option<String>,
 }
 
 impl SubscriptionEntry {
@@ -34,6 +37,7 @@ impl SubscriptionEntry {
             name: None,
             active: true,
             events_processed: 0,
+            durable_name: None,
         }
     }
 
@@ -44,7 +48,14 @@ impl SubscriptionEntry {
             name: Some(name.into()),
             active: true,
             events_processed: 0,
+            durable_name: None,
         }
+    }
+
+    /// Set a durable name for persistent queues
+    pub fn with_durable_name(mut self, name: impl Into<String>) -> Self {
+        self.durable_name = Some(name.into());
+        self
     }
 }
 
@@ -82,6 +93,11 @@ pub trait EventRegistry: Send + Sync + Debug {
 
     /// Clear all subscriptions (useful for testing)
     fn clear(&self);
+
+    /// Acknowledge that an event was successfully processed
+    fn ack_event(&self, _subscription_id: Uuid, _event_id: Uuid) {
+        // Default implementation does nothing
+    }
 }
 
 /// Registry statistics for monitoring

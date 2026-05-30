@@ -11,14 +11,20 @@ use std::sync::Arc;
 /// collection while preserving type safety for handlers.
 #[derive(Clone)]
 pub struct EventEnvelope {
-    /// The type-erased event payload
-    payload: Arc<dyn Any + Send + Sync>,
+    /// The type-erased event payload (None if loaded from disk)
+    payload: Option<Arc<dyn Any + Send + Sync>>,
+
+    /// The serialized event payload (Some if loaded from disk)
+    payload_bytes: Option<Vec<u8>>,
+
+    /// Function to serialize the in-memory payload
+    serializer: fn(&Arc<dyn Any + Send + Sync>) -> crate::Result<Vec<u8>>,
 
     /// Type ID of the original event
     type_id: TypeId,
 
     /// Human-readable type name for debugging
-    type_name: &'static str,
+    type_name: String,
 
     /// Event metadata
     pub metadata: EventMetadata,
@@ -37,9 +43,17 @@ impl EventEnvelope {
     pub fn with_metadata<T: Event>(event: T, metadata: EventMetadata) -> Self {
         // For events that don't implement HasPriority, use default priority
         Self {
-            payload: Arc::new(event),
+            payload: Some(Arc::new(event)),
+            payload_bytes: None,
+            serializer: |any| {
+                let event = any.downcast_ref::<T>().ok_or_else(|| {
+                    crate::Error::internal("Failed to downcast for serialization")
+                })?;
+                serde_json::to_vec(event)
+                    .map_err(|e| crate::Error::SerializationError(e.to_string()))
+            },
             type_id: T::type_id(),
-            type_name: T::event_type(),
+            type_name: T::event_type().to_string(),
             metadata,
             priority: EventPriority::default(),
         }
@@ -50,17 +64,44 @@ impl EventEnvelope {
         let priority = event.priority();
 
         Self {
-            payload: Arc::new(event),
+            payload: Some(Arc::new(event)),
+            payload_bytes: None,
+            serializer: |any| {
+                let event = any.downcast_ref::<T>().ok_or_else(|| {
+                    crate::Error::internal("Failed to downcast for serialization")
+                })?;
+                serde_json::to_vec(event)
+                    .map_err(|e| crate::Error::SerializationError(e.to_string()))
+            },
             type_id: T::type_id(),
-            type_name: T::event_type(),
+            type_name: T::event_type().to_string(),
+            metadata,
+            priority,
+        }
+    }
+
+    /// Create a new envelope from serialized bytes (loaded from disk)
+    pub fn from_serialized(
+        type_id: TypeId,
+        type_name: String,
+        metadata: EventMetadata,
+        priority: EventPriority,
+        payload_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            payload: None,
+            payload_bytes: Some(payload_bytes),
+            serializer: |_| Err(crate::Error::internal("Cannot serialize an already serialized event")),
+            type_id,
+            type_name,
             metadata,
             priority,
         }
     }
 
     /// Get the event type name
-    pub fn event_type(&self) -> &'static str {
-        self.type_name
+    pub fn event_type(&self) -> &str {
+        &self.type_name
     }
 
     /// Get the type ID of the contained event
@@ -68,12 +109,47 @@ impl EventEnvelope {
         self.type_id
     }
 
-    /// Try to downcast to a specific event type
+    /// Try to downcast to a specific event type (only works if in-memory)
     pub fn downcast_ref<T: Event>(&self) -> Option<&T> {
         if self.type_id == TypeId::of::<T>() {
-            self.payload.downcast_ref::<T>()
+            self.payload.as_ref().and_then(|p| p.downcast_ref::<T>())
         } else {
             None
+        }
+    }
+
+    /// Deserialize or downcast to the concrete event type
+    pub fn get_event<T: Event>(&self) -> crate::Result<T> {
+        if self.type_id != TypeId::of::<T>() {
+            return Err(crate::Error::EventNotRegistered {
+                type_name: self.type_name.clone(),
+            });
+        }
+
+        if let Some(payload) = &self.payload {
+            // It's in memory, clone it
+            if let Some(event) = payload.downcast_ref::<T>() {
+                return Ok(event.clone());
+            }
+        }
+
+        if let Some(bytes) = &self.payload_bytes {
+            // It was loaded from disk, deserialize it
+            return serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()));
+        }
+
+        Err(crate::Error::internal("Event envelope is empty"))
+    }
+
+    /// Get the serialized payload bytes (serializes on demand if needed)
+    pub fn into_bytes(&self) -> crate::Result<Vec<u8>> {
+        if let Some(bytes) = &self.payload_bytes {
+            Ok(bytes.clone())
+        } else if let Some(payload) = &self.payload {
+            (self.serializer)(payload)
+        } else {
+            Err(crate::Error::internal("Event envelope is empty"))
         }
     }
 
@@ -81,10 +157,14 @@ impl EventEnvelope {
     /// Try to extract the event as a specific type
     pub fn try_into_inner<T: Event>(self) -> Result<Arc<T>, Self> {
         if self.type_id == TypeId::of::<T>() {
-            // Try to downcast the Arc
-            match Arc::downcast::<T>(self.payload.clone()) {
-                Ok(event) => Ok(event),
-                Err(_) => Err(self),
+            if let Some(payload) = self.payload.clone() {
+                // Try to downcast the Arc
+                match Arc::downcast::<T>(payload) {
+                    Ok(event) => Ok(event),
+                    Err(_) => Err(self),
+                }
+            } else {
+                Err(self)
             }
         } else {
             Err(self)
@@ -107,7 +187,7 @@ impl EventEnvelope {
     }
 
     /// Clone the inner event payload
-    pub fn clone_payload(&self) -> Arc<dyn Any + Send + Sync> {
+    pub fn clone_payload(&self) -> Option<Arc<dyn Any + Send + Sync>> {
         self.payload.clone()
     }
 
@@ -193,7 +273,7 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent {
         id: u64,
         _message: String,
@@ -205,7 +285,12 @@ mod tests {
         }
     }
 
-    impl Event for String {
+    // Note: String cannot easily implement Event if it requires Serialize without a newtype.
+    // So we'll use a newtype for StringEvent.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct StringEvent(String);
+
+    impl Event for StringEvent {
         fn event_type() -> &'static str {
             "StringEvent"
         }
@@ -222,7 +307,7 @@ mod tests {
         assert_eq!(envelope.event_type(), "TestEvent");
         assert_eq!(envelope.type_id(), TypeId::of::<TestEvent>());
         assert!(envelope.is::<TestEvent>());
-        assert!(!envelope.is::<String>());
+        assert!(!envelope.is::<StringEvent>());
     }
 
     #[test]
@@ -234,11 +319,11 @@ mod tests {
 
         let envelope = EventEnvelope::new(event);
 
-        let downcast = envelope.downcast_ref::<TestEvent>();
-        assert!(downcast.is_some());
+        let downcast = envelope.get_event::<TestEvent>();
+        assert!(downcast.is_ok());
         assert_eq!(downcast.unwrap().id, 456);
-        let wrong_downcast = envelope.downcast_ref::<String>();
-        assert!(wrong_downcast.is_none());
+        let wrong_downcast = envelope.get_event::<StringEvent>();
+        assert!(wrong_downcast.is_err());
     }
 
     #[test]

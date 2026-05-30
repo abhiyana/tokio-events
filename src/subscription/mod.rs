@@ -20,7 +20,7 @@ pub use handler::{EventHandler, FilteredHandler, FunctionHandler, TypedHandler};
 
 /// Internal subscription data
 struct SubscriptionData {
-    handler: Arc<dyn EventHandler>,
+    sender: tokio::sync::mpsc::Sender<Arc<EventEnvelope>>,
     handle: JoinHandle<()>,
 }
 
@@ -35,15 +35,35 @@ pub struct SubscriptionManager {
 
     /// Channel for receiving events to dispatch
     event_receiver: Option<tokio::sync::mpsc::UnboundedReceiver<EventEnvelope>>,
+
+    /// Sender for auto-unsubscribe requests
+    unsub_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
 }
 
 impl SubscriptionManager {
     /// Create a new subscription manager
     pub fn new(registry: Arc<dyn EventRegistry>) -> Self {
+        let subscriptions = Arc::new(DashMap::<Uuid, SubscriptionData>::new());
+        let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::unbounded_channel();
+        
+        let subscriptions_clone = subscriptions.clone();
+        let registry_clone = registry.clone();
+        
+        tokio::spawn(async move {
+            while let Some(id) = unsub_rx.recv().await {
+                if let Some((_, data)) = subscriptions_clone.remove(&id) {
+                    let _ = registry_clone.unregister(id);
+                    data.handle.abort();
+                    debug!(subscription_id = %id, "Handler auto-unsubscribed");
+                }
+            }
+        });
+
         Self {
             registry,
-            subscriptions: Arc::new(DashMap::new()),
+            subscriptions,
             event_receiver: None,
+            unsub_tx,
         }
     }
 
@@ -76,7 +96,7 @@ impl SubscriptionManager {
         H: EventHandler,
     {
         let name = name.into();
-        let (handle, _shutdown_rx) = SubscriptionHandle::with_name(Uuid::new_v4(), &name);
+        let (handle, mut shutdown_rx) = SubscriptionHandle::with_name(Uuid::new_v4(), &name);
 
         debug!(
             subscription_id = %handle.id(),
@@ -89,14 +109,44 @@ impl SubscriptionManager {
         let entry = SubscriptionEntry::with_name(handle.id(), &name);
         self.registry.register(T::type_id(), entry)?;
 
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        let handler = Arc::new(handler);
+        let sub_id = handle.id();
+        let registry_clone = self.registry.clone();
+        let unsub_tx = self.unsub_tx.clone();
+
         // Create subscription data
         let subscription_data = SubscriptionData {
-            handler: Arc::new(handler),
+            sender: tx,
             handle: tokio::spawn(async move {
-                // Placeholder task
                 loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+                    tokio::select! {
+                        msg = rx.recv() => {
+                            if let Some(envelope_clone) = msg {
+                                trace!(subscription_id = %sub_id, "Executing handler");
+                                match handler.handle(&envelope_clone).await {
+                                    Ok(()) => {
+                                        registry_clone.increment_processed(sub_id);
+                                        trace!(subscription_id = %sub_id, "Handler executed successfully");
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            subscription_id = %sub_id,
+                                            error = %e,
+                                            "Handler execution failed"
+                                        );
+                                    }
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        _ = &mut shutdown_rx => {
+                            break;
+                        }
+                    }
                 }
+                let _ = unsub_tx.send(sub_id);
             }),
         };
 
@@ -111,6 +161,11 @@ impl SubscriptionManager {
         Ok(handle)
     }
 
+    /// Get a reference to the registry
+    pub fn registry(&self) -> Arc<dyn EventRegistry> {
+        self.registry.clone()
+    }
+
     /// Subscribe an untyped handler (can handle any event type)
     pub async fn subscribe_untyped(
         &self,
@@ -119,7 +174,7 @@ impl SubscriptionManager {
         event_type_name: &'static str,
     ) -> Result<SubscriptionHandle> {
         let name = format!("Handler<{}>", event_type_name);
-        let (handle, _shutdown_rx) = SubscriptionHandle::with_name(Uuid::new_v4(), &name);
+        let (handle, mut shutdown_rx) = SubscriptionHandle::with_name(Uuid::new_v4(), &name);
 
         debug!(
             subscription_id = %handle.id(),
@@ -132,14 +187,45 @@ impl SubscriptionManager {
         let entry = SubscriptionEntry::with_name(handle.id(), &name);
         self.registry.register(event_type_id, entry)?;
 
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        let handler = Arc::new(handler);
+        let sub_id = handle.id();
+        let registry_clone = self.registry.clone();
+        let unsub_tx = self.unsub_tx.clone();
+
         // Create subscription data
         let subscription_data = SubscriptionData {
-            handler: Arc::new(handler),
+            sender: tx,
             handle: tokio::spawn(async move {
-                // Placeholder task
                 loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+                    tokio::select! {
+                        msg = rx.recv() => {
+                            if let Some(envelope_clone) = msg {
+                                trace!(subscription_id = %sub_id, "Executing untyped handler");
+                                match handler.handle(&envelope_clone).await {
+                                    Ok(()) => {
+                                        registry_clone.increment_processed(sub_id);
+                                        registry_clone.ack_event(sub_id, envelope_clone.event_id());
+                                        trace!(subscription_id = %sub_id, "Handler executed successfully");
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            subscription_id = %sub_id,
+                                            error = %e,
+                                            "Handler execution failed"
+                                        );
+                                    }
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        _ = &mut shutdown_rx => {
+                            break;
+                        }
+                    }
                 }
+                let _ = unsub_tx.send(sub_id);
             }),
         };
 
@@ -203,50 +289,29 @@ impl SubscriptionManager {
         );
 
         // Collect handlers before spawning tasks
-        let handlers: Vec<(Uuid, Arc<dyn EventHandler>)> = subscriptions
+        let senders: Vec<(Uuid, tokio::sync::mpsc::Sender<Arc<EventEnvelope>>)> = subscriptions
             .into_iter()
             .filter_map(|sub_entry| {
                 self.subscriptions
                     .get(&sub_entry.id)
-                    .map(|sub_data| (sub_entry.id, sub_data.handler.clone()))
+                    .map(|sub_data| (sub_entry.id, sub_data.sender.clone()))
             })
             .collect();
 
-        // Dispatch to all handlers concurrently
-        let mut tasks = Vec::new();
+        // Dispatch to all handlers concurrently using channel backpressure
+        let mut sends = Vec::new();
 
-        for (sub_id, handler) in handlers {
+        for (sub_id, sender) in senders {
             let envelope_clone = envelope.clone();
-            let registry = self.registry.clone();
-
-            // Spawn task for each handler
-            let task = tokio::spawn(async move {
-                trace!(subscription_id = %sub_id, "Executing handler");
-
-                match handler.handle(&envelope_clone).await {
-                    Ok(()) => {
-                        registry.increment_processed(sub_id);
-                        trace!(subscription_id = %sub_id, "Handler executed successfully");
-                    }
-                    Err(e) => {
-                        error!(
-                            subscription_id = %sub_id,
-                            error = %e,
-                            "Handler execution failed"
-                        );
-                    }
+            sends.push(async move {
+                if let Err(e) = sender.send(envelope_clone).await {
+                    warn!("Failed to dispatch event to subscription {}: {}", sub_id, e);
                 }
             });
-
-            tasks.push(task);
         }
 
-        // Wait for all handlers to complete
-        for task in tasks {
-            if let Err(e) = task.await {
-                warn!("Handler task failed: {}", e);
-            }
-        }
+        // Wait for all sends to complete (handles backpressure if full)
+        futures::future::join_all(sends).await;
 
         Ok(())
     }
@@ -293,7 +358,7 @@ mod tests {
     use super::*;
     use crate::registry::DashMapRegistry;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent {
         message: String,
     }

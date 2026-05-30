@@ -202,7 +202,7 @@ mod tests {
     use crate::Event;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent;
 
     impl Event for TestEvent {

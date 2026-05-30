@@ -22,7 +22,7 @@ pub enum Error {
     #[error("Event type not registered: {type_name}")]
     EventNotRegistered {
         /// The name of the event type that was not registered
-        type_name: &'static str,
+        type_name: String,
     },
 
     /// Subscription not found
@@ -89,7 +89,7 @@ pub struct ErrorContext {
     /// The unique identifier of the event, if available
     pub event_id: Option<Uuid>,
     /// The type name of the event, if available
-    pub event_type: Option<&'static str>,
+    pub event_type: Option<String>,
     /// The name of the handler, if available
     pub handler_name: Option<String>,
     /// The timestamp when the error context was created
@@ -120,8 +120,8 @@ impl ErrorContext {
     }
 
     /// Set the event type
-    pub fn with_event_type(mut self, event_type: &'static str) -> Self {
-        self.event_type = Some(event_type);
+    pub fn with_event_type(mut self, event_type: impl Into<String>) -> Self {
+        self.event_type = Some(event_type.into());
         self
     }
 

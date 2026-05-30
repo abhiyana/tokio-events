@@ -236,7 +236,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent {
         value: String,
     }

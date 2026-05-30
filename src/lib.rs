@@ -77,10 +77,14 @@ pub mod dispatcher;
 pub mod bus;
 
 // These modules will be uncommented as we implement them
-// pub mod bus;
 // pub mod registry;
 // pub mod subscription;
 // pub mod dispatcher;
+
+/// Persistent storage for events
+#[cfg(feature = "persistence")]
+#[cfg_attr(docsrs, doc(cfg(feature = "persistence")))]
+pub mod persistence;
 
 // #[cfg(feature = "metrics")]
 // #[cfg_attr(docsrs, doc(cfg(feature = "metrics")))]

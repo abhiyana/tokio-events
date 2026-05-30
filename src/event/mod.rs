@@ -22,8 +22,9 @@ pub use metadata::EventMetadata;
 ///
 /// ```rust
 /// use tokio_events::Event;
+/// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Debug, Clone)]
+/// #[derive(Debug, Clone, Serialize, Deserialize)]
 /// struct UserRegistered {
 ///     user_id: u64,
 ///     email: String,
@@ -35,7 +36,7 @@ pub use metadata::EventMetadata;
 ///     }
 /// }
 /// ```
-pub trait Event: Send + Sync + Clone + Debug + 'static {
+pub trait Event: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + Clone + Debug + 'static {
     /// Returns the type name of this event.
     ///
     /// This is used for debugging and logging purposes.
@@ -62,11 +63,8 @@ pub trait Event: Send + Sync + Clone + Debug + 'static {
     }
 }
 
-/// A marker trait for events that can be serialized.
-///
-/// This is useful for events that need to be persisted or
-/// sent over the network.
-pub trait SerializableEvent: Event + serde::Serialize + serde::de::DeserializeOwned {
+/// A marker trait for events that can be serialized to JSON easily.
+pub trait JsonSerializableEvent: Event {
     /// Serialize this event to JSON
     fn to_json(&self) -> crate::Result<String> {
         serde_json::to_string(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
@@ -80,6 +78,9 @@ pub trait SerializableEvent: Event + serde::Serialize + serde::de::DeserializeOw
         serde_json::from_str(json).map_err(|e| crate::Error::SerializationError(e.to_string()))
     }
 }
+
+// Blanket impl
+impl<T: Event> JsonSerializableEvent for T {}
 
 /// Priority levels for event handling.
 ///
@@ -111,7 +112,7 @@ pub trait HasPriority {
 /// A broadcast event that all subscribers receive.
 ///
 /// This is useful for system-wide notifications.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BroadcastEvent {
     /// The message to be broadcast to all subscribers.
     pub message: String,
@@ -128,7 +129,7 @@ mod tests {
     use super::*;
     use crate::event;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent {
         id: u64,
         data: String,

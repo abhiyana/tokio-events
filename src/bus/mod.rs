@@ -141,6 +141,16 @@ impl EventBus {
         self.subscription_manager.unsubscribe(handle).await
     }
 
+    /// Replay unacknowledged events from persistent storage
+    ///
+    /// This should be called manually *after* setting up all your `.subscribe(...)`
+    /// routes. The dispatcher will scan the persistent database for orphaned events
+    /// and inject them into the memory queues of the currently active subscribers.
+    /// If you do not use the `persistence` feature, this method does nothing.
+    pub async fn replay_pending(&self) -> Result<()> {
+        self.dispatcher.replay_pending().await
+    }
+
     /// Get statistics about the event bus
     pub fn stats(&self) -> EventBusStats {
         EventBusStats {

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -24,12 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let db_path = temp_dir.path().join("events.redb");
 
-    // We create the Database wrapped in an Arc so we can share it with the EventBus
-    let db = Arc::new(redb::Database::create(&db_path)?);
-
-    // 2. We use the `with_redb` helper which is available when the "persistence" feature is enabled.
-    // It automatically sets up the RedbDispatcher and RedbRegistry internally!
-    let bus = EventBus::builder().with_redb(db).build().await?;
+    // 2. We use the `with_redb_path` helper which is available when the "persistence" feature is enabled.
+    // It automatically creates the redb database and sets up the RedbDispatcher!
+    let bus = EventBus::builder().with_redb_path(&db_path).build().await?;
 
     // 3. Subscribe to our ImportantEvent
     let handle = bus

@@ -6,7 +6,7 @@ use crate::registry::{DashMapRegistry, EventRegistry, SubscriptionEntry};
 use crate::subscription::SubscriptionManager;
 use crate::{Error, Result};
 use async_trait::async_trait;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::any::TypeId;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,6 +15,19 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{error, info, trace};
 use uuid::Uuid;
+
+/// A serialized representation of an event and its metadata for persistent storage
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PersistedEnvelope {
+    /// The stable string name of the event type
+    pub type_name: String,
+    /// The event metadata including IDs and tracing info
+    pub metadata: crate::event::EventMetadata,
+    /// The priority level of the event
+    pub priority: crate::event::EventPriority,
+    /// The serialized JSON payload of the event itself
+    pub payload: Vec<u8>,
+}
 
 const EVENTS_TABLE: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("events");
 const REFCOUNT_TABLE: TableDefinition<'_, u128, u32> = TableDefinition::new("refcount");
@@ -34,8 +47,13 @@ impl RedbRegistry {
 }
 
 impl EventRegistry for RedbRegistry {
-    fn register(&self, event_type: TypeId, subscription: SubscriptionEntry) -> Result<()> {
-        self.inner.register(event_type, subscription)
+    fn register(
+        &self,
+        event_type: TypeId,
+        type_name: &str,
+        subscription: SubscriptionEntry,
+    ) -> Result<()> {
+        self.inner.register(event_type, type_name, subscription)
     }
 
     fn unregister(&self, subscription_id: Uuid) -> Result<()> {
@@ -72,6 +90,10 @@ impl EventRegistry for RedbRegistry {
 
     fn clear(&self) {
         self.inner.clear()
+    }
+
+    fn get_type_id(&self, type_name: &str) -> Option<TypeId> {
+        self.inner.get_type_id(type_name)
     }
 
     fn ack_event(&self, _subscription_id: Uuid, event_id: Uuid) {
@@ -195,8 +217,19 @@ impl RedbDispatcher {
             let sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
 
             if sub_count > 0 {
+                // Construct PersistedEnvelope
+                let persisted_result = event.into_bytes().map(|payload| PersistedEnvelope {
+                    type_name: event.event_type().to_string(),
+                    metadata: event.metadata.clone(),
+                    priority: event.priority,
+                    payload,
+                });
+
                 // Serialize and write to redb
-                match event.into_bytes() {
+                match persisted_result.and_then(|pe| {
+                    serde_json::to_vec(&pe)
+                        .map_err(|e| crate::Error::SerializationError(e.to_string()))
+                }) {
                     Ok(bytes) => {
                         let write_txn_res = tokio::task::spawn_blocking({
                             let db = db.clone();
@@ -326,9 +359,76 @@ impl EventDispatcher for RedbDispatcher {
     }
 
     async fn replay_pending(&self) -> Result<()> {
-        // Find orphaned events in redb and push them back through the sender
-        // To do this, we need to read EVENTS_TABLE and dispatch them.
-        Ok(()) // Placeholder until we serialize full envelope
+        let db = self.db.clone();
+        let sender = self.sender.clone();
+        let registry = self.subscription_manager.registry();
+
+        let replay_res =
+            tokio::task::spawn_blocking(move || -> std::result::Result<u64, String> {
+                let read_txn = db.begin_read().map_err(|e| e.to_string())?;
+                let events = match read_txn.open_table(EVENTS_TABLE) {
+                    Ok(t) => t,
+                    Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+                    Err(e) => return Err(e.to_string()),
+                };
+                let refcounts = match read_txn.open_table(REFCOUNT_TABLE) {
+                    Ok(t) => t,
+                    Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+                    Err(e) => return Err(e.to_string()),
+                };
+
+                let mut count = 0;
+                let mut iter = events.iter().map_err(|e| e.to_string())?;
+                while let Some(event_entry) = iter.next() {
+                    let (event_id_access, payload_access) =
+                        event_entry.map_err(|e| e.to_string())?;
+                    let event_id_u128 = event_id_access.value();
+
+                    // Check if it has a positive refcount
+                    if let Ok(Some(refcount)) = refcounts.get(event_id_u128) {
+                        if refcount.value() > 0 {
+                            // Deserialize PersistedEnvelope
+                            let bytes = payload_access.value();
+                            if let Ok(persisted) =
+                                serde_json::from_slice::<PersistedEnvelope>(bytes)
+                            {
+                                // Find the TypeId
+                                if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
+                                    // Reconstruct the EventEnvelope
+                                    let envelope = EventEnvelope::from_serialized(
+                                        type_id,
+                                        persisted.type_name,
+                                        persisted.metadata,
+                                        persisted.priority,
+                                        persisted.payload,
+                                    );
+
+                                    // Inject it directly into the memory channel
+                                    if sender.blocking_send(Arc::new(envelope)).is_ok() {
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(count)
+            })
+            .await;
+
+        match replay_res {
+            Ok(Ok(count)) => {
+                if count > 0 {
+                    info!("Replayed {} pending events from redb", count);
+                }
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                error!("Failed to replay events: {}", e);
+                Err(Error::internal(format!("Failed to replay events: {}", e)))
+            }
+            Err(_) => Err(Error::internal("Replay task panicked")),
+        }
     }
 
     fn is_running(&self) -> bool {

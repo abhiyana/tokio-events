@@ -65,7 +65,12 @@ impl SubscriptionEntry {
 /// concurrently from multiple tasks.
 pub trait EventRegistry: Send + Sync + Debug {
     /// Register a new subscription for a specific event type
-    fn register(&self, event_type: TypeId, subscription: SubscriptionEntry) -> Result<()>;
+    fn register(
+        &self,
+        event_type: TypeId,
+        type_name: &str,
+        subscription: SubscriptionEntry,
+    ) -> Result<()>;
 
     /// Unregister a subscription
     fn unregister(&self, subscription_id: Uuid) -> Result<()>;
@@ -93,6 +98,12 @@ pub trait EventRegistry: Send + Sync + Debug {
 
     /// Clear all subscriptions (useful for testing)
     fn clear(&self);
+
+    /// Get the TypeId for a given event type name (useful for persistence layer mapping)
+    fn get_type_id(&self, type_name: &str) -> Option<TypeId> {
+        let _ = type_name; // To satisfy unused variable in default impl
+        None
+    }
 
     /// Acknowledge that an event was successfully processed
     fn ack_event(&self, _subscription_id: Uuid, _event_id: Uuid) {

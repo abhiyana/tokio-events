@@ -8,7 +8,7 @@ use uuid::Uuid;
 ///
 /// This includes tracking information like timestamps, correlation IDs,
 /// and custom metadata that can be used for debugging and tracing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventMetadata {
     /// Unique identifier for this event instance
     pub event_id: Uuid,

@@ -87,7 +87,18 @@ impl<T: Event> JsonSerializableEvent for T {}
 /// Priority levels for event handling.
 ///
 /// Higher priority events are processed before lower priority ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum EventPriority {
     /// Lowest priority - processed last
     Low = 0,

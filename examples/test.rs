@@ -1,8 +1,8 @@
 use tokio_events::{Event, EventBus};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct MyEvent {
-    message: String,
+    pub message: String,
 }
 
 impl Event for MyEvent {

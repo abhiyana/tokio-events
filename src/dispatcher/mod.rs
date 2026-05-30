@@ -27,6 +27,11 @@ pub trait EventDispatcher: Send + Sync {
     /// Dispatch an event
     async fn dispatch(&self, envelope: EventEnvelope) -> Result<()>;
 
+    /// Replay pending persisted events (for persistent dispatchers)
+    async fn replay_pending(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Check if the dispatcher is running
     fn is_running(&self) -> bool;
 

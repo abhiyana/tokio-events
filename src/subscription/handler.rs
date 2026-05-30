@@ -58,12 +58,11 @@ impl<T: Event, H: TypedHandler<T>> TypedHandlerAdapter<T, H> {
 #[async_trait]
 impl<T: Event, H: TypedHandler<T>> EventHandler for TypedHandlerAdapter<T, H> {
     async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
-        if let Some(event) = envelope.downcast_ref::<T>() {
-            self.handler.handle_typed(event).await
-        } else {
-            Err(Error::EventNotRegistered {
-                type_name: envelope.event_type(),
-            })
+        match envelope.get_event::<T>() {
+            Ok(event) => self.handler.handle_typed(&event).await,
+            Err(_) => Err(Error::EventNotRegistered {
+                type_name: envelope.event_type().to_string(),
+            }),
         }
     }
 
@@ -118,13 +117,14 @@ where
     Fut: Future<Output = ()> + Send + 'static,
 {
     async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
-        if let Some(event) = envelope.downcast_ref::<T>() {
-            (self.function)(event.clone()).await;
-            Ok(())
-        } else {
-            Err(Error::EventNotRegistered {
-                type_name: envelope.event_type(),
-            })
+        match envelope.get_event::<T>() {
+            Ok(event) => {
+                (self.function)(event).await;
+                Ok(())
+            }
+            Err(_) => Err(Error::EventNotRegistered {
+                type_name: envelope.event_type().to_string(),
+            }),
         }
     }
 
@@ -238,7 +238,7 @@ impl fmt::Display for HandlerStats {
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     struct TestEvent {
         value: i32,
     }
@@ -271,7 +271,7 @@ mod tests {
             base_handler,
             |envelope: &EventEnvelope| {
                 envelope
-                    .downcast_ref::<TestEvent>()
+                    .get_event::<TestEvent>()
                     .map(|e| e.value > 10)
                     .unwrap_or(false)
             },

@@ -254,7 +254,10 @@ impl EventDispatcher for ChannelDispatcher {
 
         DispatcherStats {
             events_dispatched,
-            queue_size: self.sender.max_capacity().saturating_sub(self.sender.capacity()),
+            queue_size: self
+                .sender
+                .max_capacity()
+                .saturating_sub(self.sender.capacity()),
             dispatch_errors: self.dispatch_errors.load(Ordering::Relaxed),
             avg_dispatch_time_us: total_time.checked_div(events_dispatched).unwrap_or(0),
             max_queue_size: self.max_queue_size.load(Ordering::Relaxed) as usize,

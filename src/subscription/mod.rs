@@ -45,10 +45,10 @@ impl SubscriptionManager {
     pub fn new(registry: Arc<dyn EventRegistry>) -> Self {
         let subscriptions = Arc::new(DashMap::<Uuid, SubscriptionData>::new());
         let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::unbounded_channel();
-        
+
         let subscriptions_clone = subscriptions.clone();
         let registry_clone = registry.clone();
-        
+
         tokio::spawn(async move {
             while let Some(id) = unsub_rx.recv().await {
                 if let Some((_, data)) = subscriptions_clone.remove(&id) {

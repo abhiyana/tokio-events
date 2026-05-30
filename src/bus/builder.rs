@@ -14,7 +14,7 @@ pub struct EventBusBuilder {
     config: EventBusConfig,
     registry: Option<Arc<dyn EventRegistry>>,
     custom_dispatcher: Option<Box<dyn EventDispatcher>>,
-    
+
     #[cfg(feature = "persistence")]
     redb: Option<Arc<redb::Database>>,
 }
@@ -97,7 +97,8 @@ impl EventBusBuilder {
         #[cfg(feature = "persistence")]
         let registry = if let Some(db) = &self.redb {
             let base = Arc::new(DashMapRegistry::with_capacity(100));
-            Arc::new(crate::persistence::RedbRegistry::new(db.clone(), base)) as Arc<dyn EventRegistry>
+            Arc::new(crate::persistence::RedbRegistry::new(db.clone(), base))
+                as Arc<dyn EventRegistry>
         } else {
             self.registry.unwrap_or_else(|| {
                 info!("Creating default DashMapRegistry");

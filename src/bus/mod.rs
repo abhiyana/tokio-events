@@ -33,7 +33,7 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 /// ```rust,ignore
 /// use tokio_events::{EventBus, Event};
 ///
-/// #[derive(Debug, Clone)]
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// struct MyEvent { data: String }
 ///
 /// impl Event for MyEvent {

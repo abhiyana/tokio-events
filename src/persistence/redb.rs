@@ -2,7 +2,8 @@
 
 use crate::dispatcher::{DispatcherConfig, DispatcherStats, EventDispatcher};
 use crate::event::EventEnvelope;
-use crate::registry::{EventRegistry, SubscriptionEntry, DashMapRegistry};
+use crate::registry::{DashMapRegistry, EventRegistry, SubscriptionEntry};
+use crate::subscription::SubscriptionManager;
 use crate::{Error, Result};
 use async_trait::async_trait;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -14,7 +15,6 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{error, info, trace};
 use uuid::Uuid;
-use crate::subscription::SubscriptionManager;
 
 const EVENTS_TABLE: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("events");
 const REFCOUNT_TABLE: TableDefinition<'_, u128, u32> = TableDefinition::new("refcount");
@@ -125,6 +125,7 @@ impl EventRegistry for RedbRegistry {
 }
 
 /// A dispatcher that writes events to redb before passing them to the subscription manager
+#[allow(missing_debug_implementations)]
 pub struct RedbDispatcher {
     db: Arc<Database>,
     config: DispatcherConfig,
@@ -141,7 +142,11 @@ pub struct RedbDispatcher {
 
 impl RedbDispatcher {
     /// Create a new RedbDispatcher
-    pub fn new(db: Arc<Database>, config: DispatcherConfig, subscription_manager: Arc<SubscriptionManager>) -> Self {
+    pub fn new(
+        db: Arc<Database>,
+        config: DispatcherConfig,
+        subscription_manager: Arc<SubscriptionManager>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(config.max_queue_size);
 
         Self {
@@ -160,6 +165,7 @@ impl RedbDispatcher {
     }
 
     /// Process events from the channel
+    #[allow(clippy::too_many_arguments)]
     async fn process_events(
         db: Arc<Database>,
         mut receiver: mpsc::Receiver<Arc<EventEnvelope>>,
@@ -197,21 +203,30 @@ impl RedbDispatcher {
                             move || -> std::result::Result<(), String> {
                                 let write_txn = db.begin_write().map_err(|e| e.to_string())?;
                                 {
-                                    let mut events = write_txn.open_table(EVENTS_TABLE).map_err(|e| e.to_string())?;
-                                    let mut refcounts = write_txn.open_table(REFCOUNT_TABLE).map_err(|e| e.to_string())?;
-                                    events.insert(event_id_u128, bytes.as_slice()).map_err(|e| e.to_string())?;
-                                    refcounts.insert(event_id_u128, sub_count).map_err(|e| e.to_string())?;
+                                    let mut events = write_txn
+                                        .open_table(EVENTS_TABLE)
+                                        .map_err(|e| e.to_string())?;
+                                    let mut refcounts = write_txn
+                                        .open_table(REFCOUNT_TABLE)
+                                        .map_err(|e| e.to_string())?;
+                                    events
+                                        .insert(event_id_u128, bytes.as_slice())
+                                        .map_err(|e| e.to_string())?;
+                                    refcounts
+                                        .insert(event_id_u128, sub_count)
+                                        .map_err(|e| e.to_string())?;
                                 }
                                 write_txn.commit().map_err(|e| e.to_string())
                             }
-                        }).await;
-                        
+                        })
+                        .await;
+
                         if let Err(e) = write_txn_res {
                             error!("Failed to persist event to redb: {}", e);
                             dispatch_errors.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                    },
+                    }
                     Err(e) => {
                         error!("Failed to serialize event for persistence: {}", e);
                         dispatch_errors.fetch_add(1, Ordering::Relaxed);
@@ -309,7 +324,7 @@ impl EventDispatcher for RedbDispatcher {
             .await
             .map_err(|_| Error::internal("Dispatcher channel closed"))
     }
-    
+
     async fn replay_pending(&self) -> Result<()> {
         // Find orphaned events in redb and push them back through the sender
         // To do this, we need to read EVENTS_TABLE and dispatch them.
@@ -323,7 +338,7 @@ impl EventDispatcher for RedbDispatcher {
     fn stats(&self) -> DispatcherStats {
         let events = self.events_dispatched.load(Ordering::Relaxed);
         let time = self.total_dispatch_time_us.load(Ordering::Relaxed);
-        let avg_time = if events > 0 { time / events } else { 0 };
+        let avg_time = time.checked_div(events).unwrap_or(0);
 
         DispatcherStats {
             events_dispatched: events,

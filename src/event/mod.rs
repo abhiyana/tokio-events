@@ -36,7 +36,9 @@ pub use metadata::EventMetadata;
 ///     }
 /// }
 /// ```
-pub trait Event: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + Clone + Debug + 'static {
+pub trait Event:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + Clone + Debug + 'static
+{
     /// Returns the type name of this event.
     ///
     /// This is used for debugging and logging purposes.

@@ -21,8 +21,8 @@ pub struct ChannelDispatcher {
     /// Configuration
     config: DispatcherConfig,
 
-    /// Channel for sending events
-    sender: mpsc::Sender<Arc<EventEnvelope>>,
+    /// Event queue sender
+    sender: Option<mpsc::Sender<Arc<EventEnvelope>>>,
 
     /// Channel for receiving events (moved to worker)
     receiver: Option<mpsc::Receiver<Arc<EventEnvelope>>>,
@@ -50,7 +50,7 @@ impl ChannelDispatcher {
 
         Self {
             config,
-            sender,
+            sender: Some(sender),
             receiver: Some(receiver),
             subscription_manager,
             worker_handle: None,
@@ -63,7 +63,7 @@ impl ChannelDispatcher {
     }
 
     /// Get a sender for this dispatcher
-    pub fn sender(&self) -> mpsc::Sender<Arc<EventEnvelope>> {
+    pub fn sender(&self) -> Option<mpsc::Sender<Arc<EventEnvelope>>> {
         self.sender.clone()
     }
 
@@ -79,14 +79,12 @@ impl ChannelDispatcher {
     ) {
         info!("Event dispatcher worker started");
 
-        while is_running.load(Ordering::Relaxed) {
-            // Wait for next event or timeout
-            let event = tokio::select! {
-                Some(event) = receiver.recv() => event,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                    continue;
-                }
-            };
+        // Continuously process events until the channel is closed
+        while let Some(event) = receiver.recv().await {
+            // Also stop if is_running becomes false abruptly
+            if !is_running.load(Ordering::SeqCst) {
+                break;
+            }
 
             trace!(
                 event_id = %event.event_id(),
@@ -142,7 +140,7 @@ impl ChannelDispatcher {
 #[async_trait]
 impl EventDispatcher for ChannelDispatcher {
     async fn start(&mut self) -> Result<()> {
-        if self.is_running.load(Ordering::Relaxed) {
+        if self.is_running.load(Ordering::SeqCst) {
             return Err(Error::internal("Dispatcher already running"));
         }
 
@@ -155,7 +153,7 @@ impl EventDispatcher for ChannelDispatcher {
             .ok_or_else(|| Error::internal("Dispatcher already started"))?;
 
         // Mark as running
-        self.is_running.store(true, Ordering::Relaxed);
+        self.is_running.store(true, Ordering::SeqCst);
 
         // Start worker task
         let subscription_manager = self.subscription_manager.clone();
@@ -185,14 +183,15 @@ impl EventDispatcher for ChannelDispatcher {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        if !self.is_running.load(Ordering::Relaxed) {
+        if !self.is_running.load(Ordering::SeqCst) {
             return Ok(());
         }
 
         info!("Stopping channel dispatcher");
 
         // Signal stop
-        self.is_running.store(false, Ordering::Relaxed);
+        self.is_running.store(false, Ordering::SeqCst);
+        self.sender.take(); // Close the channel to unblock the worker
 
         // Wait for worker to finish
         if let Some(handle) = self.worker_handle.take() {
@@ -206,18 +205,35 @@ impl EventDispatcher for ChannelDispatcher {
         Ok(())
     }
 
+    async fn shutdown_gracefully(&mut self) -> Result<()> {
+        info!("Shutting down channel dispatcher gracefully");
+
+        // Close the sender channel so the receiver will get `None` when empty
+        self.sender.take();
+
+        // Wait for worker to finish draining the queue
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.await.map_err(|e| Error::internal(format!("Worker panicked: {}", e)));
+        }
+
+        self.is_running.store(false, Ordering::SeqCst);
+        info!("Channel dispatcher graceful shutdown complete");
+        Ok(())
+    }
+
     async fn dispatch(&self, envelope: EventEnvelope) -> Result<()> {
-        if !self.is_running.load(Ordering::Relaxed) {
+        if !self.is_running.load(Ordering::SeqCst) {
             return Err(Error::internal("Dispatcher not running"));
         }
 
         let envelope = Arc::new(envelope);
 
+        let sender = self.sender.as_ref().ok_or_else(|| Error::ShuttingDown)?;
+
         // Update max queue size
-        let current_size = self
-            .sender
+        let current_size = sender
             .max_capacity()
-            .saturating_sub(self.sender.capacity());
+            .saturating_sub(sender.capacity());
         let max_size = self.max_queue_size.load(Ordering::Relaxed);
         if current_size as u64 > max_size {
             self.max_queue_size
@@ -225,7 +241,7 @@ impl EventDispatcher for ChannelDispatcher {
         }
 
         if self.config.drop_on_full {
-            match self.sender.try_send(envelope) {
+            match sender.try_send(envelope) {
                 Ok(()) => Ok(()),
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     warn!("Event queue full, dropping event");
@@ -237,7 +253,7 @@ impl EventDispatcher for ChannelDispatcher {
                 }
             }
         } else {
-            match self.sender.send(envelope).await {
+            match sender.send(envelope).await {
                 Ok(()) => Ok(()),
                 Err(_) => Err(Error::internal("Event channel closed")),
             }
@@ -245,19 +261,17 @@ impl EventDispatcher for ChannelDispatcher {
     }
 
     fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Relaxed)
+        self.is_running.load(Ordering::SeqCst)
     }
 
     fn stats(&self) -> DispatcherStats {
         let events_dispatched = self.events_dispatched.load(Ordering::Relaxed);
         let total_time = self.total_dispatch_time_us.load(Ordering::Relaxed);
+        let current_queue = self.sender.as_ref().map(|s| s.max_capacity() - s.capacity()).unwrap_or(0);
 
         DispatcherStats {
             events_dispatched,
-            queue_size: self
-                .sender
-                .max_capacity()
-                .saturating_sub(self.sender.capacity()),
+            queue_size: current_queue,
             dispatch_errors: self.dispatch_errors.load(Ordering::Relaxed),
             avg_dispatch_time_us: total_time.checked_div(events_dispatched).unwrap_or(0),
             max_queue_size: self.max_queue_size.load(Ordering::Relaxed) as usize,
@@ -286,7 +300,11 @@ mod tests {
     async fn test_channel_dispatcher() {
         // Create components
         let registry = Arc::new(DashMapRegistry::new());
-        let subscription_manager = Arc::new(SubscriptionManager::new(registry));
+        let subscription_manager = Arc::new(SubscriptionManager::new(
+            registry,
+            0,
+            std::time::Duration::from_millis(10),
+        ));
 
         let config = DispatcherConfig::new()
             .max_queue_size(100)

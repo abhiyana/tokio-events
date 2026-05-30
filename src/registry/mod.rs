@@ -159,7 +159,6 @@ impl<T: EventRegistry> RegistryStatistics for T {}
 mod tests {
     use super::*;
 
-    /*************  ✨ Windsurf Command ⭐  *************/
     /// Test the `SubscriptionEntry::new` method.
     ///
     /// This test verifies that a new `SubscriptionEntry` is correctly
@@ -167,8 +166,6 @@ mod tests {
     /// matches the provided UUID, the `active` field is set to true,
     /// the `events_processed` field is initialized to 0, and the `name`
     /// field is `None`.
-
-    /*******  67d1de76-8a13-4a2b-a0da-3b28bade00bb  *******/
     #[test]
     fn test_subscription_entry() {
         let id = Uuid::max();

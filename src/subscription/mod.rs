@@ -38,11 +38,37 @@ pub struct SubscriptionManager {
 
     /// Sender for auto-unsubscribe requests
     unsub_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+
+    /// Maximum number of retries for failing handlers
+    max_retries: u32,
+
+    /// Base backoff duration for retries
+    retry_backoff: std::time::Duration,
+
+    /// Optional Dead Letter Queue (DLQ) sender for permanently failed events
+    dlq_tx: Option<tokio::sync::mpsc::Sender<Arc<EventEnvelope>>>,
+
+    /// Per-handler channel buffer size
+    handler_channel_size: usize,
 }
 
 impl SubscriptionManager {
     /// Create a new subscription manager
-    pub fn new(registry: Arc<dyn EventRegistry>) -> Self {
+    pub fn new(
+        registry: Arc<dyn EventRegistry>,
+        max_retries: u32,
+        retry_backoff: std::time::Duration,
+    ) -> Self {
+        Self::with_channel_size(registry, max_retries, retry_backoff, 256)
+    }
+
+    /// Create a new subscription manager with custom handler channel size
+    pub fn with_channel_size(
+        registry: Arc<dyn EventRegistry>,
+        max_retries: u32,
+        retry_backoff: std::time::Duration,
+        handler_channel_size: usize,
+    ) -> Self {
         let subscriptions = Arc::new(DashMap::<Uuid, SubscriptionData>::new());
         let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -64,7 +90,16 @@ impl SubscriptionManager {
             subscriptions,
             event_receiver: None,
             unsub_tx,
+            max_retries,
+            retry_backoff,
+            dlq_tx: None,
+            handler_channel_size,
         }
+    }
+
+    /// Set the Dead Letter Queue (DLQ) sender
+    pub fn set_dlq(&mut self, dlq_tx: tokio::sync::mpsc::Sender<Arc<EventEnvelope>>) {
+        self.dlq_tx = Some(dlq_tx);
     }
 
     /// Set the event receiver channel
@@ -73,6 +108,27 @@ impl SubscriptionManager {
         receiver: tokio::sync::mpsc::UnboundedReceiver<EventEnvelope>,
     ) {
         self.event_receiver = Some(receiver);
+    }
+
+    /// Shut down the subscription manager gracefully, waiting for all handlers to process buffered events
+    pub async fn shutdown_gracefully(&self) {
+        let mut handles = Vec::new();
+
+        // Extract all subscriptions from the map
+        let ids: Vec<_> = self.subscriptions.iter().map(|s| *s.key()).collect();
+        for id in ids {
+            if let Some((_, data)) = self.subscriptions.remove(&id) {
+                // Drop the sender to close the channel
+                drop(data.sender);
+                handles.push(data.handle);
+                let _ = self.registry.unregister(id);
+            }
+        }
+
+        // Wait for all handlers to finish
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     /// Subscribe a handler to events of type T
@@ -105,16 +161,14 @@ impl SubscriptionManager {
             "Subscribing handler"
         );
 
-        // Register in the registry
-        let entry = SubscriptionEntry::with_name(handle.id(), &name);
-        self.registry
-            .register(T::type_id(), T::event_type(), entry)?;
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(self.handler_channel_size);
         let handler = Arc::new(handler);
         let sub_id = handle.id();
         let registry_clone = self.registry.clone();
         let unsub_tx = self.unsub_tx.clone();
+        let max_retries = self.max_retries;
+        let retry_backoff = self.retry_backoff;
+        let dlq_tx = self.dlq_tx.clone();
 
         // Create subscription data
         let subscription_data = SubscriptionData {
@@ -124,18 +178,52 @@ impl SubscriptionManager {
                     tokio::select! {
                         msg = rx.recv() => {
                             if let Some(envelope_clone) = msg {
-                                trace!(subscription_id = %sub_id, "Executing handler");
-                                match handler.handle(&envelope_clone).await {
-                                    Ok(()) => {
-                                        registry_clone.increment_processed(sub_id);
-                                        trace!(subscription_id = %sub_id, "Handler executed successfully");
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            subscription_id = %sub_id,
-                                            error = %e,
-                                            "Handler execution failed"
-                                        );
+                                let mut attempt = 0;
+                                loop {
+                                    trace!(
+                                        subscription_id = %sub_id,
+                                        attempt = attempt + 1,
+                                        "Executing handler"
+                                    );
+                                    match handler.handle(&envelope_clone).await {
+                                        Ok(()) => {
+                                            registry_clone.increment_processed(sub_id);
+                                            trace!(
+                                                subscription_id = %sub_id,
+                                                "Handler executed successfully"
+                                            );
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            attempt += 1;
+                                            if attempt > max_retries {
+                                                error!(
+                                                    subscription_id = %sub_id,
+                                                    error = %e,
+                                                    "Handler permanently failed after {} attempts",
+                                                    attempt
+                                                );
+                                                
+                                                // Send to DLQ if configured
+                                                if let Some(dlq) = &dlq_tx {
+                                                    let _ = dlq.send(envelope_clone.clone()).await;
+                                                }
+                                                
+                                                break;
+                                            }
+
+                                            // Exponential backoff
+                                            let backoff = retry_backoff * (2u32.pow(attempt - 1));
+                                            tracing::warn!(
+                                                subscription_id = %sub_id,
+                                                error = %e,
+                                                "Handler failed, retrying in {:?} (attempt {}/{})",
+                                                backoff,
+                                                attempt,
+                                                max_retries
+                                            );
+                                            tokio::time::sleep(backoff).await;
+                                        }
                                     }
                                 }
                             } else {
@@ -153,6 +241,11 @@ impl SubscriptionManager {
 
         // Store subscription
         self.subscriptions.insert(handle.id(), subscription_data);
+
+        // Then register in the registry so publishers can discover it
+        let entry = SubscriptionEntry::with_name(handle.id(), &name);
+        self.registry
+            .register(T::type_id(), T::event_type(), entry)?;
 
         debug!(
             subscription_id = %handle.id(),
@@ -184,16 +277,16 @@ impl SubscriptionManager {
             "Subscribing untyped handler"
         );
 
-        // Register in the registry
-        let entry = SubscriptionEntry::with_name(handle.id(), &name);
-        self.registry
-            .register(event_type_id, event_type_name, entry)?;
+        // Defer registering in the registry until the end
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(self.handler_channel_size);
         let handler = Arc::new(handler);
         let sub_id = handle.id();
         let registry_clone = self.registry.clone();
         let unsub_tx = self.unsub_tx.clone();
+        let max_retries = self.max_retries;
+        let retry_backoff = self.retry_backoff;
+        let dlq_tx = self.dlq_tx.clone();
 
         // Create subscription data
         let subscription_data = SubscriptionData {
@@ -203,19 +296,54 @@ impl SubscriptionManager {
                     tokio::select! {
                         msg = rx.recv() => {
                             if let Some(envelope_clone) = msg {
-                                trace!(subscription_id = %sub_id, "Executing untyped handler");
-                                match handler.handle(&envelope_clone).await {
-                                    Ok(()) => {
-                                        registry_clone.increment_processed(sub_id);
-                                        registry_clone.ack_event(sub_id, envelope_clone.event_id());
-                                        trace!(subscription_id = %sub_id, "Handler executed successfully");
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            subscription_id = %sub_id,
-                                            error = %e,
-                                            "Handler execution failed"
-                                        );
+                                let mut attempt = 0;
+                                loop {
+                                    trace!(
+                                        subscription_id = %sub_id,
+                                        attempt = attempt + 1,
+                                        "Executing untyped handler"
+                                    );
+                                    match handler.handle(&envelope_clone).await {
+                                        Ok(()) => {
+                                            registry_clone.increment_processed(sub_id);
+                                            registry_clone.ack_event(sub_id, envelope_clone.event_id());
+                                            trace!(
+                                                subscription_id = %sub_id,
+                                                "Handler executed successfully"
+                                            );
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            attempt += 1;
+                                            if attempt > max_retries {
+                                                error!(
+                                                    subscription_id = %sub_id,
+                                                    error = %e,
+                                                    "Handler permanently failed after {} attempts",
+                                                    attempt
+                                                );
+                                                
+                                                if let Some(dlq) = &dlq_tx {
+                                                    let _ = dlq.send(envelope_clone.clone()).await;
+                                                }
+                                                
+                                                // We must still ack the event so it gets removed from the dispatcher/persistence
+                                                // since we've now routed it to DLQ (or dropped it).
+                                                registry_clone.ack_event(sub_id, envelope_clone.event_id());
+                                                break;
+                                            }
+
+                                            let backoff = retry_backoff * (2u32.pow(attempt - 1));
+                                            tracing::warn!(
+                                                subscription_id = %sub_id,
+                                                error = %e,
+                                                "Handler failed, retrying in {:?} (attempt {}/{})",
+                                                backoff,
+                                                attempt,
+                                                max_retries
+                                            );
+                                            tokio::time::sleep(backoff).await;
+                                        }
                                     }
                                 }
                             } else {
@@ -233,6 +361,16 @@ impl SubscriptionManager {
 
         // Store subscription
         self.subscriptions.insert(handle.id(), subscription_data);
+
+        // Register in the registry
+        let entry = SubscriptionEntry::with_name(handle.id(), &name);
+        self.registry
+            .register(event_type_id, event_type_name, entry)?;
+
+        debug!(
+            subscription_id = %handle.id(),
+            "Untyped handler subscribed successfully"
+        );
 
         Ok(handle)
     }
@@ -280,9 +418,12 @@ impl SubscriptionManager {
         let subscriptions = self.registry.get_subscriptions(event_type);
 
         if subscriptions.is_empty() {
+            println!("SM: No subscriptions found for event type: {}", envelope.event_type());
             trace!("No subscriptions for event type");
             return Ok(());
         }
+
+        println!("SM: Found {} subscriptions for event {}", subscriptions.len(), envelope.event_type());
 
         debug!(
             event_id = %envelope.event_id(),
@@ -304,6 +445,7 @@ impl SubscriptionManager {
         let mut sends = Vec::new();
 
         for (sub_id, sender) in senders {
+            println!("SM: dispatching to subscription {}", sub_id);
             let envelope_clone = envelope.clone();
             sends.push(async move {
                 if let Err(e) = sender.send(envelope_clone).await {
@@ -374,7 +516,11 @@ mod tests {
     #[tokio::test]
     async fn test_subscription_manager() {
         let registry = Arc::new(DashMapRegistry::new());
-        let manager = SubscriptionManager::new(registry.clone());
+        let manager = SubscriptionManager::new(
+            registry.clone(),
+            0, // No retries for test
+            std::time::Duration::from_millis(10),
+        );
 
         // Subscribe a function handler
         let counter = Arc::new(tokio::sync::Mutex::new(0));

@@ -9,39 +9,42 @@ pub struct EventBusConfig {
     /// Dispatcher configuration
     pub dispatcher: DispatcherConfig,
 
-    /// Enable event deduplication
-    pub enable_deduplication: bool,
-
-    /// Deduplication window (how long to remember event IDs)
-    pub deduplication_window: Duration,
-
     /// Maximum number of retry attempts for failed handlers
     pub max_retries: u32,
 
     /// Retry backoff base duration
     pub retry_backoff: Duration,
 
-    /// Enable event ordering by correlation ID
-    pub enable_ordering: bool,
-
     /// Shutdown timeout
     pub shutdown_timeout: Duration,
 
     /// Enable tracing
     pub enable_tracing: bool,
+
+    /// Per-handler channel buffer size.
+    ///
+    /// Each subscription gets its own channel from the dispatcher. This controls
+    /// how many events can be buffered per handler before backpressure kicks in.
+    /// Too small → deadlocks under load. Too large → memory waste.
+    pub handler_channel_size: usize,
+
+    /// Dead Letter Queue channel buffer size.
+    ///
+    /// Controls how many permanently-failed events can be buffered in the DLQ
+    /// before backpressure cascades into the retry loop.
+    pub dlq_channel_size: usize,
 }
 
 impl Default for EventBusConfig {
     fn default() -> Self {
         Self {
             dispatcher: DispatcherConfig::default(),
-            enable_deduplication: false,
-            deduplication_window: Duration::from_secs(300), // 5 minutes
             max_retries: 3,
             retry_backoff: Duration::from_millis(100),
-            enable_ordering: false,
             shutdown_timeout: Duration::from_secs(30),
             enable_tracing: true,
+            handler_channel_size: 256,
+            dlq_channel_size: 1000,
         }
     }
 }
@@ -50,18 +53,6 @@ impl EventBusConfig {
     /// Create a new configuration with defaults
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Enable event deduplication
-    pub fn enable_deduplication(mut self, enable: bool) -> Self {
-        self.enable_deduplication = enable;
-        self
-    }
-
-    /// Set deduplication window
-    pub fn deduplication_window(mut self, window: Duration) -> Self {
-        self.deduplication_window = window;
-        self
     }
 
     /// Set maximum retry attempts
@@ -73,12 +64,6 @@ impl EventBusConfig {
     /// Set retry backoff duration
     pub fn retry_backoff(mut self, backoff: Duration) -> Self {
         self.retry_backoff = backoff;
-        self
-    }
-
-    /// Enable event ordering
-    pub fn enable_ordering(mut self, enable: bool) -> Self {
-        self.enable_ordering = enable;
         self
     }
 
@@ -102,6 +87,18 @@ impl EventBusConfig {
         self.dispatcher = f(self.dispatcher);
         self
     }
+
+    /// Set per-handler channel buffer size
+    pub fn handler_channel_size(mut self, size: usize) -> Self {
+        self.handler_channel_size = size;
+        self
+    }
+
+    /// Set DLQ channel buffer size
+    pub fn dlq_channel_size(mut self, size: usize) -> Self {
+        self.dlq_channel_size = size;
+        self
+    }
 }
 
 /// Preset configurations for common use cases
@@ -115,8 +112,8 @@ impl EventBusConfig {
                     .drop_on_full(true)
                     .processing_timeout_ms(1000)
             })
-            .enable_deduplication(false)
             .max_retries(1)
+            .handler_channel_size(1024)
     }
 
     /// Configuration for reliable processing
@@ -127,20 +124,19 @@ impl EventBusConfig {
                     .drop_on_full(false)
                     .processing_timeout_ms(30_000)
             })
-            .enable_deduplication(true)
             .max_retries(5)
             .retry_backoff(Duration::from_millis(500))
+            .handler_channel_size(512)
+            .dlq_channel_size(5000)
     }
 
-    /// Configuration for ordered processing
+    /// Configuration for ordered processing (single worker)
     pub fn ordered() -> Self {
         Self::default()
             .dispatcher_config(|d| {
-                d.worker_threads(1) // Single worker for ordering
+                d.worker_threads(1)
                     .drop_on_full(false)
             })
-            .enable_ordering(true)
-            .enable_deduplication(true)
     }
 
     /// Configuration for testing
@@ -153,5 +149,7 @@ impl EventBusConfig {
             })
             .shutdown_timeout(Duration::from_secs(5))
             .enable_tracing(false)
+            .handler_channel_size(64)
     }
 }
+

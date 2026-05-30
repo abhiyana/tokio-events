@@ -134,7 +134,17 @@ impl EventBusBuilder {
         };
 
         // Create subscription manager
-        let subscription_manager = Arc::new(SubscriptionManager::new(registry.clone()));
+        let mut sm = SubscriptionManager::with_channel_size(
+            registry.clone(),
+            self.config.max_retries,
+            self.config.retry_backoff,
+            self.config.handler_channel_size,
+        );
+
+        let (dlq_tx, dlq_rx) = tokio::sync::mpsc::channel(self.config.dlq_channel_size);
+        sm.set_dlq(dlq_tx);
+
+        let subscription_manager = Arc::new(sm);
 
         // Create or use provided dispatcher
         #[cfg(not(feature = "persistence"))]
@@ -146,7 +156,7 @@ impl EventBusBuilder {
             Box::new(ChannelDispatcher::new(
                 self.config.dispatcher.clone(),
                 subscription_manager.clone(),
-            ))
+            )) as Box<dyn EventDispatcher>
         };
 
         #[cfg(feature = "persistence")]
@@ -176,9 +186,10 @@ impl EventBusBuilder {
             config: self.config,
             registry,
             subscription_manager,
-            dispatcher,
+            dispatcher: Arc::new(tokio::sync::Mutex::new(Some(dispatcher))),
             shutdown_hooks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            dlq_rx: Arc::new(tokio::sync::Mutex::new(Some(dlq_rx))),
         };
 
         info!("EventBus built successfully");

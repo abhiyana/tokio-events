@@ -28,6 +28,11 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 /// The EventBus provides a high-level API for event-driven communication
 /// between different parts of an application.
 ///
+/// # Sharing
+///
+/// `EventBus` is designed to be shared across tasks. Wrap it in `Arc<EventBus>`
+/// and clone the `Arc` to pass it around. Shutdown works via `&self`.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -42,7 +47,7 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let bus = EventBus::builder().build().await?;
+///     let bus = Arc::new(EventBus::builder().build().await?);
 ///     
 ///     // Subscribe to events
 ///     let handle = bus.subscribe(|event: MyEvent| async move {
@@ -52,23 +57,35 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 ///     // Publish an event
 ///     bus.publish(MyEvent { data: "Hello".into() }).await?;
 ///     
+///     // Shutdown works via &self — no need to unwrap the Arc
+///     bus.shutdown_gracefully().await?;
+///     
 ///     Ok(())
 /// }
 /// ```
+#[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub struct EventBus {
     pub(crate) config: EventBusConfig,
     pub(crate) registry: Arc<dyn EventRegistry>,
     pub(crate) subscription_manager: Arc<SubscriptionManager>,
-    pub(crate) dispatcher: Box<dyn EventDispatcher>,
+    pub(crate) dispatcher: Arc<tokio::sync::Mutex<Option<Box<dyn EventDispatcher>>>>,
     pub(crate) shutdown_hooks: Arc<Mutex<Vec<ShutdownHook>>>,
     pub(crate) is_shutting_down: Arc<AtomicBool>,
+    pub(crate) dlq_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>>>>,
 }
 
 impl EventBus {
     /// Create a new EventBus builder
     pub fn builder() -> EventBusBuilder {
         EventBusBuilder::new()
+    }
+
+    /// Take the Dead Letter Queue (DLQ) receiver.
+    /// 
+    /// This can only be called once. Returns `None` if it has already been taken.
+    pub async fn take_dlq_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>> {
+        self.dlq_rx.lock().await.take()
     }
 
     /// Publish an event to all subscribers
@@ -83,7 +100,7 @@ impl EventBus {
         event: T,
         metadata: EventMetadata,
     ) -> Result<Uuid> {
-        if self.is_shutting_down.load(Ordering::Relaxed) {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
             return Err(Error::ShuttingDown);
         }
 
@@ -98,7 +115,11 @@ impl EventBus {
         let envelope = EventEnvelope::with_metadata(event, metadata);
 
         // Dispatch the event
-        self.dispatcher.dispatch(envelope).await?;
+        {
+            let guard = self.dispatcher.lock().await;
+            let dispatcher = guard.as_ref().ok_or(Error::ShuttingDown)?;
+            dispatcher.dispatch(envelope).await?;
+        }
 
         debug!(
             event_id = %event_id,
@@ -116,11 +137,29 @@ impl EventBus {
         F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        if self.is_shutting_down.load(Ordering::Relaxed) {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
             return Err(Error::ShuttingDown);
         }
 
         self.subscription_manager.subscribe_fn(handler).await
+    }
+
+    /// Subscribe to events of a specific type with a handler that can fail.
+    ///
+    /// If the handler returns an `Err`, the event bus will use its retry mechanism
+    /// (with exponential backoff) before routing the event to the Dead Letter Queue.
+    pub async fn subscribe_fallible<T, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
+    where
+        T: Event,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::ShuttingDown);
+        }
+
+        let function_handler = crate::subscription::handler::FallibleFunctionHandler::new(handler);
+        self.subscription_manager.subscribe::<T, _>(function_handler).await
     }
 
     /// Subscribe with a custom handler implementation
@@ -129,7 +168,7 @@ impl EventBus {
         T: Event,
         H: EventHandler,
     {
-        if self.is_shutting_down.load(Ordering::Relaxed) {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
             return Err(Error::ShuttingDown);
         }
 
@@ -148,15 +187,26 @@ impl EventBus {
     /// and inject them into the memory queues of the currently active subscribers.
     /// If you do not use the `persistence` feature, this method does nothing.
     pub async fn replay_pending(&self) -> Result<()> {
-        self.dispatcher.replay_pending().await
+        let guard = self.dispatcher.lock().await;
+        if let Some(dispatcher) = guard.as_ref() {
+            dispatcher.replay_pending().await
+        } else {
+            Err(Error::ShuttingDown)
+        }
     }
 
     /// Get statistics about the event bus
     pub fn stats(&self) -> EventBusStats {
+        // Try to get dispatcher stats; if shutdown already took it, use defaults
+        let dispatcher_stats = self.dispatcher.try_lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|d| d.stats()))
+            .unwrap_or_default();
+
         EventBusStats {
             total_subscriptions: self.registry.total_subscriptions(),
             event_types: self.registry.event_types().len(),
-            dispatcher_stats: self.dispatcher.stats(),
+            dispatcher_stats,
             subscription_stats: self.subscription_manager.stats(),
         }
     }
@@ -177,15 +227,17 @@ impl EventBus {
 
     /// Check if the event bus is shutting down
     pub fn is_shutting_down(&self) -> bool {
-        self.is_shutting_down.load(Ordering::Relaxed)
+        self.is_shutting_down.load(Ordering::SeqCst)
     }
 
-    /// Shutdown the event bus gracefully
-    pub async fn shutdown(self) -> Result<()> {
-        info!("Shutting down EventBus");
+    /// Shutdown the event bus abruptly
+    ///
+    /// This method works via `&self` so you can call it on an `Arc<EventBus>`.
+    pub async fn shutdown(&self) -> Result<()> {
+        info!("Shutting down EventBus (abruptly)");
 
         // Mark as shutting down
-        self.is_shutting_down.store(true, Ordering::Relaxed);
+        self.is_shutting_down.store(true, Ordering::SeqCst);
 
         // Run shutdown hooks
         let hooks = self.shutdown_hooks.lock().await;
@@ -196,10 +248,14 @@ impl EventBus {
         }
         drop(hooks);
 
-        // Stop the dispatcher with timeout
+        // Take and stop the dispatcher with timeout
         let dispatcher_shutdown = tokio::time::timeout(self.config.shutdown_timeout, async {
-            let mut dispatcher = self.dispatcher;
-            dispatcher.stop().await
+            let mut guard = self.dispatcher.lock().await;
+            if let Some(mut dispatcher) = guard.take() {
+                dispatcher.stop().await
+            } else {
+                Ok(())
+            }
         });
 
         if dispatcher_shutdown.await.is_err() {
@@ -209,7 +265,45 @@ impl EventBus {
         // Shutdown subscription manager
         self.subscription_manager.shutdown().await?;
 
-        info!("EventBus shutdown complete");
+        info!("EventBus abrupt shutdown complete");
+        Ok(())
+    }
+
+    /// Shutdown the event bus gracefully
+    /// 
+    /// This will prevent new events from being published, wait for the dispatcher to route
+    /// all buffered events, and wait for all handler tasks to finish processing their events.
+    ///
+    /// This method works via `&self` so you can call it on an `Arc<EventBus>`.
+    pub async fn shutdown_gracefully(&self) -> Result<()> {
+        info!("Shutting down EventBus gracefully");
+
+        // Mark as shutting down, preventing new publishes
+        self.is_shutting_down.store(true, Ordering::SeqCst);
+
+        // Run shutdown hooks
+        let hooks = self.shutdown_hooks.lock().await;
+        for hook in hooks.iter() {
+            if let Err(e) = hook().await {
+                error!("Shutdown hook failed: {}", e);
+            }
+        }
+        drop(hooks);
+
+        // Take and gracefully drain the dispatcher
+        {
+            let mut guard = self.dispatcher.lock().await;
+            if let Some(mut dispatcher) = guard.take() {
+                if let Err(e) = dispatcher.shutdown_gracefully().await {
+                    error!("Dispatcher graceful shutdown failed: {}", e);
+                }
+            }
+        }
+
+        // Wait for subscription manager to finish processing handler tasks
+        self.subscription_manager.shutdown_gracefully().await;
+
+        info!("EventBus graceful shutdown complete");
         Ok(())
     }
 }

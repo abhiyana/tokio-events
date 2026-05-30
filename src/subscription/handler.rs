@@ -133,6 +133,67 @@ where
     }
 }
 
+/// A handler that wraps an asynchronous function that can fail
+#[allow(missing_debug_implementations)]
+pub struct FallibleFunctionHandler<T, F, Fut>
+where
+    T: Event,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    function: F,
+    name: String,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T, F, Fut> FallibleFunctionHandler<T, F, Fut>
+where
+    T: Event,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    /// Create a new fallible function handler
+    pub fn new(function: F) -> Self {
+        Self {
+            function,
+            name: std::any::type_name::<F>().to_string(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a new fallible function handler with a custom name
+    pub fn with_name(function: F, name: impl Into<String>) -> Self {
+        Self {
+            function,
+            name: name.into(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<T, F, Fut> EventHandler for FallibleFunctionHandler<T, F, Fut>
+where
+    T: Event,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
+        match envelope.get_event::<T>() {
+            Ok(event) => {
+                (self.function)(event).await
+            }
+            Err(_) => Err(Error::EventNotRegistered {
+                type_name: envelope.event_type().to_string(),
+            }),
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// A handler that can filter events before processing
 #[allow(missing_debug_implementations)]
 pub struct FilteredHandler<H: EventHandler> {

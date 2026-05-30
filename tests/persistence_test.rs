@@ -99,15 +99,109 @@ async fn test_redb_crash_recovery() {
         // Trigger crash recovery!
         bus.replay_pending().await.unwrap();
 
-        // Wait for the replayed event to be processed
+        // Wait for the replay to finish
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        assert_eq!(
-            received_count.load(Ordering::Relaxed),
-            1,
-            "Event should have been replayed once"
-        );
+        assert_eq!(received_count.load(Ordering::Relaxed), 1);
 
         bus.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn test_redb_graceful_shutdown() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("events_graceful.redb");
+
+    let bus = EventBus::builder()
+        .with_redb_path(&db_path)
+        .build()
+        .await
+        .unwrap();
+
+    let processed_count = Arc::new(AtomicUsize::new(0));
+    let count_clone = processed_count.clone();
+
+    let _sub = bus
+        .subscribe(move |_: CriticalEvent| {
+            let counter = count_clone.clone();
+            async move {
+                // Sleep to ensure queue fills and is forced to drain during shutdown
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+        .unwrap();
+
+    for i in 0..10 {
+        bus.publish(CriticalEvent {
+            id: Uuid::new_v4(),
+            data: format!("data {}", i),
+        })
+        .await
+        .unwrap();
+    }
+
+    // Shut down gracefully. It must wait until all 10 events are processed.
+    bus.shutdown_gracefully().await.unwrap();
+
+    assert_eq!(processed_count.load(Ordering::Relaxed), 10);
+}
+
+#[tokio::test]
+async fn test_redb_concurrent_workers() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("events_concurrent.redb");
+
+    let mut config = tokio_events::bus::config::EventBusConfig::default();
+    config = config.dispatcher_config(|d| d.worker_threads(4));
+
+    let bus = EventBus::builder()
+        .config(config)
+        .with_redb_path(&db_path)
+        .build()
+        .await
+        .unwrap();
+
+    let processed_count = Arc::new(AtomicUsize::new(0));
+    let count_clone = processed_count.clone();
+
+    // Handler 1
+    let _sub1 = bus
+        .subscribe(move |_: CriticalEvent| {
+            let counter = count_clone.clone();
+            async move {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+        .unwrap();
+
+    let count_clone2 = processed_count.clone();
+    
+    // Handler 2
+    let _sub2 = bus
+        .subscribe(move |_: CriticalEvent| {
+            let counter = count_clone2.clone();
+            async move {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+        .unwrap();
+
+    // 100 events * 2 handlers = 200 processings
+    for _ in 0..100 {
+        bus.publish(CriticalEvent {
+            id: Uuid::new_v4(),
+            data: "concurrent".into(),
+        })
+        .await
+        .unwrap();
+    }
+
+    bus.shutdown_gracefully().await.unwrap();
+
+    assert_eq!(processed_count.load(Ordering::Relaxed), 200);
 }

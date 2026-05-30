@@ -1,0 +1,15 @@
+[package]
+name = "tokio-events-macros"
+version = "0.2.0"
+edition = "2021"
+authors = ["Abhishek Khushal Harde <akharde1998@gmail.com>"]
+description = "Procedural macros for tokio-events"
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"

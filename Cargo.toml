@@ -1,6 +1,6 @@
 [package]
 name = "tokio-events"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Abhishek Khushal Harde <akharde1998@gmail.com>"]
 description = "A modern, type-safe async event bus for Rust applications"
@@ -9,6 +9,11 @@ license = "MIT OR Apache-2.0"
 keywords = ["async", "events", "event-bus", "tokio", "pubsub"]
 categories = ["asynchronous", "concurrency"]
 documentation = "https://docs.rs/tokio-events"
+
+[workspace]
+members = [
+    "tokio-events-macros"
+]
 
 [dependencies]
 tokio = { version = "1.46.1", features = ["full"] }
@@ -24,10 +29,12 @@ tracing = { version = "0.1", features = ["std"] }
 num_cpus = "1.16.0"
 fxhash = "0.2.1"
 redb = { version = "4.1.0", optional = true }
+tokio-events-macros = { path = "tokio-events-macros", version = "0.2.0", optional = true }
 
 [features]
-default = []
+default = ["macros"]
 persistence = ["dep:redb"]
+macros = ["dep:tokio-events-macros"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -21,8 +21,13 @@ pub trait EventDispatcher: Send + Sync {
     /// Start the dispatcher
     async fn start(&mut self) -> Result<()>;
 
-    /// Stop the dispatcher
+    /// Stop the dispatcher (abruptly)
     async fn stop(&mut self) -> Result<()>;
+
+    /// Shut down the dispatcher gracefully, waiting for queued events to be processed
+    async fn shutdown_gracefully(&mut self) -> Result<()> {
+        self.stop().await
+    }
 
     /// Dispatch an event
     async fn dispatch(&self, envelope: EventEnvelope) -> Result<()>;

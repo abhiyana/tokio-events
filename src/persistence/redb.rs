@@ -35,14 +35,76 @@ const REFCOUNT_TABLE: TableDefinition<'_, u128, u32> = TableDefinition::new("ref
 /// A registry that wraps an in-memory registry and intercepts acks to update redb
 #[derive(Debug)]
 pub struct RedbRegistry {
-    db: Arc<Database>,
     inner: Arc<DashMapRegistry>,
+    ack_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
 }
 
 impl RedbRegistry {
     /// Create a new RedbRegistry
     pub fn new(db: Arc<Database>, inner: Arc<DashMapRegistry>) -> Self {
-        Self { db, inner }
+        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<Uuid>();
+        let db_clone = db.clone();
+        
+        // Background worker to process DB acks without blocking the Tokio reactor
+        tokio::spawn(async move {
+            while let Some(event_id) = ack_rx.recv().await {
+                let db_for_task = db_clone.clone();
+                let res = tokio::task::spawn_blocking(move || {
+                    let event_id_u128 = event_id.as_u128();
+                    let write_txn = match db_for_task.begin_write() {
+                        Ok(txn) => txn,
+                        Err(e) => {
+                            error!("Failed to begin write txn for ack: {}", e);
+                            return;
+                        }
+                    };
+
+                    {
+                        let mut refcounts = match write_txn.open_table(REFCOUNT_TABLE) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!("Failed to open refcount table: {}", e);
+                                return;
+                            }
+                        };
+                        let mut events = match write_txn.open_table(EVENTS_TABLE) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!("Failed to open events table: {}", e);
+                                return;
+                            }
+                        };
+
+                        let current = if let Ok(Some(count_access)) = refcounts.get(event_id_u128) {
+                            Some(count_access.value())
+                        } else {
+                            None
+                        };
+
+                        if let Some(current) = current {
+                            if current <= 1 {
+                                // Last subscriber processed it, delete the event
+                                let _ = refcounts.remove(event_id_u128);
+                                let _ = events.remove(event_id_u128);
+                                trace!(event_id = %event_id, "Event completely processed and removed from DB");
+                            } else {
+                                // Decrement
+                                let _ = refcounts.insert(event_id_u128, current - 1);
+                                trace!(event_id = %event_id, remaining = current - 1, "Event acked");
+                            }
+                        }
+                    }
+
+                    let _ = write_txn.commit();
+                }).await;
+                
+                if let Err(e) = res {
+                    error!("Ack task panicked: {}", e);
+                }
+            }
+        });
+
+        Self { inner, ack_tx }
     }
 }
 
@@ -97,52 +159,7 @@ impl EventRegistry for RedbRegistry {
     }
 
     fn ack_event(&self, _subscription_id: Uuid, event_id: Uuid) {
-        let event_id_u128 = event_id.as_u128();
-        let write_txn = match self.db.begin_write() {
-            Ok(txn) => txn,
-            Err(e) => {
-                error!("Failed to begin write txn for ack: {}", e);
-                return;
-            }
-        };
-
-        {
-            let mut refcounts = match write_txn.open_table(REFCOUNT_TABLE) {
-                Ok(t) => t,
-                Err(e) => {
-                    error!("Failed to open refcount table: {}", e);
-                    return;
-                }
-            };
-            let mut events = match write_txn.open_table(EVENTS_TABLE) {
-                Ok(t) => t,
-                Err(e) => {
-                    error!("Failed to open events table: {}", e);
-                    return;
-                }
-            };
-
-            let current = if let Ok(Some(count_access)) = refcounts.get(event_id_u128) {
-                Some(count_access.value())
-            } else {
-                None
-            };
-
-            if let Some(current) = current {
-                if current <= 1 {
-                    // Last subscriber processed it, delete the event
-                    let _ = refcounts.remove(event_id_u128);
-                    let _ = events.remove(event_id_u128);
-                    trace!(event_id = %event_id, "Event completely processed and removed from DB");
-                } else {
-                    // Decrement
-                    let _ = refcounts.insert(event_id_u128, current - 1);
-                    trace!(event_id = %event_id, remaining = current - 1, "Event acked");
-                }
-            }
-        }
-
-        let _ = write_txn.commit();
+        let _ = self.ack_tx.send(event_id);
     }
 }
 
@@ -151,7 +168,7 @@ impl EventRegistry for RedbRegistry {
 pub struct RedbDispatcher {
     db: Arc<Database>,
     config: DispatcherConfig,
-    sender: mpsc::Sender<Arc<EventEnvelope>>,
+    sender: Option<mpsc::Sender<Arc<EventEnvelope>>>,
     receiver: Option<mpsc::Receiver<Arc<EventEnvelope>>>,
     subscription_manager: Arc<SubscriptionManager>,
     worker_handle: Option<JoinHandle<()>>,
@@ -174,7 +191,7 @@ impl RedbDispatcher {
         Self {
             db,
             config,
-            sender,
+            sender: Some(sender),
             receiver: Some(receiver),
             subscription_manager,
             worker_handle: None,
@@ -200,13 +217,10 @@ impl RedbDispatcher {
     ) {
         info!("Redb dispatcher worker started");
 
-        while is_running.load(Ordering::Relaxed) {
-            let event = tokio::select! {
-                Some(event) = receiver.recv() => event,
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
-                    continue;
-                }
-            };
+        while let Some(event) = receiver.recv().await {
+            if !is_running.load(Ordering::SeqCst) {
+                break;
+            }
 
             let start = Instant::now();
             let event_id = event.event_id();
@@ -304,11 +318,11 @@ impl RedbDispatcher {
 #[async_trait]
 impl EventDispatcher for RedbDispatcher {
     async fn start(&mut self) -> Result<()> {
-        if self.is_running.load(Ordering::Relaxed) {
+        if self.is_running.load(Ordering::SeqCst) {
             return Ok(());
         }
 
-        self.is_running.store(true, Ordering::Relaxed);
+        self.is_running.store(true, Ordering::SeqCst);
 
         if let Some(receiver) = self.receiver.take() {
             let db = self.db.clone();
@@ -338,29 +352,52 @@ impl EventDispatcher for RedbDispatcher {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        self.is_running.store(false, Ordering::Relaxed);
+        self.is_running.store(false, Ordering::SeqCst);
+        self.sender.take(); // Close channel
 
         if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.await;
+            let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await;
         }
 
         Ok(())
     }
 
+    async fn shutdown_gracefully(&mut self) -> Result<()> {
+        info!("Shutting down Redb dispatcher gracefully");
+
+        self.sender.take(); // Close channel so recv() returns None
+
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.await.map_err(|e| Error::internal(format!("Worker panicked: {}", e)));
+        }
+
+        self.is_running.store(false, Ordering::SeqCst);
+        info!("Redb dispatcher graceful shutdown complete");
+        Ok(())
+    }
+
     async fn dispatch(&self, envelope: EventEnvelope) -> Result<()> {
-        if !self.is_running.load(Ordering::Relaxed) {
+        if !self.is_running.load(Ordering::SeqCst) {
             return Err(Error::internal("Dispatcher is not running"));
         }
 
-        self.sender
-            .send(Arc::new(envelope))
-            .await
-            .map_err(|_| Error::internal("Dispatcher channel closed"))
+        let sender = self.sender.as_ref().ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
+        let current_size = sender.max_capacity().saturating_sub(sender.capacity());
+        let max_size = self.max_queue_size.load(Ordering::Relaxed);
+        if current_size as u64 > max_size {
+            self.max_queue_size.store(current_size as u64, Ordering::Relaxed);
+        }
+
+        if self.config.drop_on_full {
+            sender.try_send(Arc::new(envelope)).map_err(|_| Error::internal("Channel full"))
+        } else {
+            sender.send(Arc::new(envelope)).await.map_err(|_| Error::internal("Channel closed"))
+        }
     }
 
     async fn replay_pending(&self) -> Result<()> {
         let db = self.db.clone();
-        let sender = self.sender.clone();
+        let sender = self.sender.clone().ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
         let registry = self.subscription_manager.registry();
 
         let replay_res =
@@ -378,8 +415,7 @@ impl EventDispatcher for RedbDispatcher {
                 };
 
                 let mut count = 0;
-                let mut iter = events.iter().map_err(|e| e.to_string())?;
-                while let Some(event_entry) = iter.next() {
+                for event_entry in events.iter().map_err(|e| e.to_string())? {
                     let (event_id_access, payload_access) =
                         event_entry.map_err(|e| e.to_string())?;
                     let event_id_u128 = event_id_access.value();
@@ -432,17 +468,18 @@ impl EventDispatcher for RedbDispatcher {
     }
 
     fn is_running(&self) -> bool {
-        self.is_running.load(Ordering::Relaxed)
+        self.is_running.load(Ordering::SeqCst)
     }
 
     fn stats(&self) -> DispatcherStats {
         let events = self.events_dispatched.load(Ordering::Relaxed);
         let time = self.total_dispatch_time_us.load(Ordering::Relaxed);
         let avg_time = time.checked_div(events).unwrap_or(0);
+        let current_queue = self.sender.as_ref().map(|s| s.max_capacity() - s.capacity()).unwrap_or(0);
 
         DispatcherStats {
             events_dispatched: events,
-            queue_size: (self.config.max_queue_size - self.sender.capacity()),
+            queue_size: current_queue,
             dispatch_errors: self.dispatch_errors.load(Ordering::Relaxed),
             avg_dispatch_time_us: avg_time,
             max_queue_size: self.max_queue_size.load(Ordering::Relaxed) as usize,

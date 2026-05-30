@@ -5,7 +5,7 @@
 //! ## Features
 //!
 //! - **Type-safe** event publishing and subscription
-//! - **High performance** with zero-copy message passing
+//! - **High performance** async-first design built on Tokio
 //! - **Async-first** design built on Tokio
 //! - **Flexible** subscription management
 //! - **Thread-safe** by default
@@ -75,24 +75,12 @@ pub mod dispatcher;
 
 /// The main event bus implementation
 pub mod bus;
-
-// These modules will be uncommented as we implement them
-// pub mod registry;
-// pub mod subscription;
-// pub mod dispatcher;
+pub mod global;
 
 /// Persistent storage for events
 #[cfg(feature = "persistence")]
 #[cfg_attr(docsrs, doc(cfg(feature = "persistence")))]
 pub mod persistence;
-
-// #[cfg(feature = "metrics")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "metrics")))]
-// pub mod metrics;
-
-// #[cfg(feature = "middleware")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "middleware")))]
-// pub mod middleware;
 
 // Re-export commonly used types
 pub use bus::{EventBus, EventBusBuilder};
@@ -100,12 +88,9 @@ pub use error::{Error, Result};
 pub use event::{Event, EventEnvelope, EventMetadata, EventPriority, HasPriority};
 pub use subscription::{EventHandler, SubscriptionHandle};
 
-// Will be added when implemented:
-// pub use metrics::Metrics;
-
-// Will be added when implemented:
-// pub use bus::{EventBus, EventBusBuilder};
-// pub use subscription::SubscriptionHandle;
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+pub use tokio_events_macros::Event;
 
 /// Prelude module for convenient imports
 ///
@@ -118,4 +103,7 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::event::{Event, EventPriority, HasPriority};
     pub use crate::subscription::SubscriptionHandle;
+
+    #[cfg(feature = "macros")]
+    pub use tokio_events_macros::Event as EventMacro;
 }

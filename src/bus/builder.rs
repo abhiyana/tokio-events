@@ -14,9 +14,12 @@ pub struct EventBusBuilder {
     config: EventBusConfig,
     registry: Option<Arc<dyn EventRegistry>>,
     custom_dispatcher: Option<Box<dyn EventDispatcher>>,
-    
+
     #[cfg(feature = "persistence")]
     redb: Option<Arc<redb::Database>>,
+
+    #[cfg(feature = "persistence")]
+    redb_path: Option<std::path::PathBuf>,
 }
 
 impl EventBusBuilder {
@@ -28,6 +31,8 @@ impl EventBusBuilder {
             custom_dispatcher: None,
             #[cfg(feature = "persistence")]
             redb: None,
+            #[cfg(feature = "persistence")]
+            redb_path: None,
         }
     }
 
@@ -61,10 +66,18 @@ impl EventBusBuilder {
         self
     }
 
-    /// Enable redb persistence for the event bus
+    /// Enable redb persistence for the event bus using an existing Database instance
     #[cfg(feature = "persistence")]
     pub fn with_redb(mut self, db: Arc<redb::Database>) -> Self {
         self.redb = Some(db);
+        self
+    }
+
+    /// Enable redb persistence by providing a file path
+    /// The database will be created automatically when `build()` is called.
+    #[cfg(feature = "persistence")]
+    pub fn with_redb_path(mut self, path: impl AsRef<std::path::Path>) -> Self {
+        self.redb_path = Some(path.as_ref().to_path_buf());
         self
     }
 
@@ -95,9 +108,24 @@ impl EventBusBuilder {
         });
 
         #[cfg(feature = "persistence")]
-        let registry = if let Some(db) = &self.redb {
+        let mut db_instance = self.redb;
+
+        #[cfg(feature = "persistence")]
+        if db_instance.is_none() {
+            if let Some(path) = &self.redb_path {
+                info!("Creating redb Database at {:?}", path);
+                let db = redb::Database::create(path).map_err(|e| {
+                    crate::Error::internal(format!("Failed to create redb database: {}", e))
+                })?;
+                db_instance = Some(Arc::new(db));
+            }
+        }
+
+        #[cfg(feature = "persistence")]
+        let registry = if let Some(db) = &db_instance {
             let base = Arc::new(DashMapRegistry::with_capacity(100));
-            Arc::new(crate::persistence::RedbRegistry::new(db.clone(), base)) as Arc<dyn EventRegistry>
+            Arc::new(crate::persistence::RedbRegistry::new(db.clone(), base))
+                as Arc<dyn EventRegistry>
         } else {
             self.registry.unwrap_or_else(|| {
                 info!("Creating default DashMapRegistry");
@@ -125,7 +153,7 @@ impl EventBusBuilder {
         let mut dispatcher = if let Some(dispatcher) = self.custom_dispatcher {
             info!("Using custom dispatcher");
             dispatcher
-        } else if let Some(db) = &self.redb {
+        } else if let Some(db) = &db_instance {
             info!("Creating RedbDispatcher for persistence");
             Box::new(crate::persistence::RedbDispatcher::new(
                 db.clone(),

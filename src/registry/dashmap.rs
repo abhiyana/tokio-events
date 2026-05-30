@@ -19,6 +19,9 @@ pub struct DashMapRegistry {
 
     /// Map from subscription ID to event TypeId for faster lookups
     subscription_to_type: Arc<DashMap<Uuid, TypeId>>,
+
+    /// Map from event type_name to TypeId for persistence recovery
+    name_to_type: Arc<DashMap<String, TypeId>>,
 }
 
 impl DashMapRegistry {
@@ -27,6 +30,7 @@ impl DashMapRegistry {
         Self {
             subscriptions: Arc::new(DashMap::new()),
             subscription_to_type: Arc::new(DashMap::new()),
+            name_to_type: Arc::new(DashMap::new()),
         }
     }
 
@@ -35,6 +39,7 @@ impl DashMapRegistry {
         Self {
             subscriptions: Arc::new(DashMap::with_capacity(capacity)),
             subscription_to_type: Arc::new(DashMap::with_capacity(capacity * 10)), // Assume ~10 subs per type
+            name_to_type: Arc::new(DashMap::with_capacity(capacity)),
         }
     }
 }
@@ -46,7 +51,12 @@ impl Default for DashMapRegistry {
 }
 
 impl EventRegistry for DashMapRegistry {
-    fn register(&self, event_type: TypeId, subscription: SubscriptionEntry) -> Result<()> {
+    fn register(
+        &self,
+        event_type: TypeId,
+        type_name: &str,
+        subscription: SubscriptionEntry,
+    ) -> Result<()> {
         trace!(
             subscription_id = %subscription.id,
             ?event_type,
@@ -56,6 +66,9 @@ impl EventRegistry for DashMapRegistry {
         // Store the type mapping
         self.subscription_to_type
             .insert(subscription.id, event_type);
+
+        // Store the string name to TypeId mapping
+        self.name_to_type.insert(type_name.to_string(), event_type);
 
         // Add to subscriptions list
         self.subscriptions
@@ -173,6 +186,11 @@ impl EventRegistry for DashMapRegistry {
     fn clear(&self) {
         self.subscriptions.clear();
         self.subscription_to_type.clear();
+        self.name_to_type.clear();
+    }
+
+    fn get_type_id(&self, type_name: &str) -> Option<TypeId> {
+        self.name_to_type.get(type_name).map(|v| *v)
     }
 }
 
@@ -207,7 +225,7 @@ mod tests {
 
         // Register subscription
         registry
-            .register(TestEvent::type_id(), subscription)
+            .register(TestEvent::type_id(), TestEvent::event_type(), subscription)
             .unwrap();
 
         // Get subscriptions for the event type
@@ -224,7 +242,7 @@ mod tests {
 
         // Register and then unregister
         registry
-            .register(TestEvent::type_id(), subscription)
+            .register(TestEvent::type_id(), TestEvent::event_type(), subscription)
             .unwrap();
         assert_eq!(registry.total_subscriptions(), 1);
 
@@ -243,13 +261,19 @@ mod tests {
         // Register multiple subscriptions for same event
         for i in 0..3 {
             let sub = SubscriptionEntry::with_name(Uuid::new_v4(), format!("handler-{}", i));
-            registry.register(TestEvent::type_id(), sub).unwrap();
+            registry
+                .register(TestEvent::type_id(), TestEvent::event_type(), sub)
+                .unwrap();
         }
 
         // Register subscription for different event
         let other_sub = SubscriptionEntry::new(Uuid::new_v4());
         registry
-            .register(AnotherEvent::type_id(), other_sub)
+            .register(
+                AnotherEvent::type_id(),
+                AnotherEvent::event_type(),
+                other_sub,
+            )
             .unwrap();
 
         assert_eq!(registry.subscription_count(TestEvent::type_id()), 3);
@@ -265,7 +289,7 @@ mod tests {
         let subscription = SubscriptionEntry::new(sub_id);
 
         registry
-            .register(TestEvent::type_id(), subscription)
+            .register(TestEvent::type_id(), TestEvent::event_type(), subscription)
             .unwrap();
 
         // Deactivate the subscription
@@ -287,7 +311,7 @@ mod tests {
         let subscription = SubscriptionEntry::new(sub_id);
 
         registry
-            .register(TestEvent::type_id(), subscription)
+            .register(TestEvent::type_id(), TestEvent::event_type(), subscription)
             .unwrap();
 
         // Increment counter

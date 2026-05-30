@@ -36,7 +36,9 @@ pub use metadata::EventMetadata;
 ///     }
 /// }
 /// ```
-pub trait Event: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + Clone + Debug + 'static {
+pub trait Event:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + Clone + Debug + 'static
+{
     /// Returns the type name of this event.
     ///
     /// This is used for debugging and logging purposes.
@@ -85,7 +87,18 @@ impl<T: Event> JsonSerializableEvent for T {}
 /// Priority levels for event handling.
 ///
 /// Higher priority events are processed before lower priority ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum EventPriority {
     /// Lowest priority - processed last
     Low = 0,

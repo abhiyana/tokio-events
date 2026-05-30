@@ -15,7 +15,7 @@
 //! ```rust,no_run
 //! use tokio_events::{Event, EventBus};
 //!
-//! #[derive(Debug, Clone)]
+//! #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 //! struct UserRegistered {
 //!     user_id: u64,
 //!     email: String,

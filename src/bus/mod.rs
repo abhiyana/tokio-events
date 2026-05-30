@@ -33,7 +33,7 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 /// ```rust,ignore
 /// use tokio_events::{EventBus, Event};
 ///
-/// #[derive(Debug, Clone)]
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// struct MyEvent { data: String }
 ///
 /// impl Event for MyEvent {
@@ -139,6 +139,16 @@ impl EventBus {
     /// Unsubscribe a handler
     pub async fn unsubscribe(&self, handle: SubscriptionHandle) -> Result<()> {
         self.subscription_manager.unsubscribe(handle).await
+    }
+
+    /// Replay unacknowledged events from persistent storage
+    ///
+    /// This should be called manually *after* setting up all your `.subscribe(...)`
+    /// routes. The dispatcher will scan the persistent database for orphaned events
+    /// and inject them into the memory queues of the currently active subscribers.
+    /// If you do not use the `persistence` feature, this method does nothing.
+    pub async fn replay_pending(&self) -> Result<()> {
+        self.dispatcher.replay_pending().await
     }
 
     /// Get statistics about the event bus

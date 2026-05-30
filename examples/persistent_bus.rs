@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -23,23 +22,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Here we create it in a temp directory for the example.
     let temp_dir = tempfile::tempdir()?;
     let db_path = temp_dir.path().join("events.redb");
-    
-    // We create the Database wrapped in an Arc so we can share it with the EventBus
-    let db = Arc::new(redb::Database::create(&db_path)?);
 
-    // 2. We use the `with_redb` helper which is available when the "persistence" feature is enabled.
-    // It automatically sets up the RedbDispatcher and RedbRegistry internally!
-    let bus = EventBus::builder()
-        .with_redb(db)
-        .build()
-        .await?;
+    // 2. We use the `with_redb_path` helper which is available when the "persistence" feature is enabled.
+    // It automatically creates the redb database and sets up the RedbDispatcher!
+    let bus = EventBus::builder().with_redb_path(&db_path).build().await?;
 
     // 3. Subscribe to our ImportantEvent
-    let handle = bus.subscribe(|event: ImportantEvent| async move {
-        println!("Subscriber processed event: {:?}", event);
-        // Once this function completes, the RedbRegistry will receive an ack_event
-        // and safely remove the event from the redb store.
-    }).await?;
+    let handle = bus
+        .subscribe(|event: ImportantEvent| async move {
+            println!("Subscriber processed event: {:?}", event);
+            // Once this function completes, the RedbRegistry will receive an ack_event
+            // and safely remove the event from the redb store.
+        })
+        .await?;
 
     // 4. Publish an event.
     // Because we use RedbDispatcher, it writes the serialized event to `events.redb`
@@ -49,7 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bus.publish(ImportantEvent {
         id: 42,
         data: "Highly critical data!".to_string(),
-    }).await?;
+    })
+    .await?;
 
     // Wait for the subscriber to process the event
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;

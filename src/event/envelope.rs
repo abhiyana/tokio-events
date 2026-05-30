@@ -91,7 +91,11 @@ impl EventEnvelope {
         Self {
             payload: None,
             payload_bytes: Some(payload_bytes),
-            serializer: |_| Err(crate::Error::internal("Cannot serialize an already serialized event")),
+            serializer: |_| {
+                Err(crate::Error::internal(
+                    "Cannot serialize an already serialized event",
+                ))
+            },
             type_id,
             type_name,
             metadata,

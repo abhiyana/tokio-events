@@ -227,11 +227,9 @@ impl fmt::Display for HandlerStats {
             "Processed: {}, Failed: {}, Avg time: {}ms",
             self.events_processed,
             self.events_failed,
-            if self.events_processed > 0 {
-                self.total_processing_time_ms / self.events_processed
-            } else {
-                0
-            }
+            self.total_processing_time_ms
+                .checked_div(self.events_processed)
+                .unwrap_or(0)
         )
     }
 }

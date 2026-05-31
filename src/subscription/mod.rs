@@ -188,6 +188,7 @@ impl SubscriptionManager {
                                     match handler.handle(&envelope_clone).await {
                                         Ok(()) => {
                                             registry_clone.increment_processed(sub_id);
+                                            registry_clone.ack_event(sub_id, envelope_clone.event_id());
                                             trace!(
                                                 subscription_id = %sub_id,
                                                 "Handler executed successfully"
@@ -208,6 +209,10 @@ impl SubscriptionManager {
                                                 if let Some(dlq) = &dlq_tx {
                                                     let _ = dlq.send(envelope_clone.clone()).await;
                                                 }
+                                                
+                                                // We must still ack the event so it gets removed from the dispatcher/persistence
+                                                // since we've now routed it to DLQ (or dropped it).
+                                                registry_clone.ack_event(sub_id, envelope_clone.event_id());
                                                 
                                                 break;
                                             }

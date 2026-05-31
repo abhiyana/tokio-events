@@ -1,6 +1,6 @@
 [package]
 name = "tokio-events"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Abhishek Khushal Harde <akharde1998@gmail.com>"]
 description = "A modern, type-safe async event bus for Rust applications"

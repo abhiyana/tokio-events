@@ -104,5 +104,5 @@ pub mod prelude {
     pub use crate::subscription::SubscriptionHandle;
 
     #[cfg(feature = "macros")]
-    pub use tokio_events_macros::Event as EventMacro;
+    pub use tokio_events_macros::Event;
 }

@@ -126,6 +126,9 @@ impl EventBus {
             event_type = T::event_type(),
             "Event published successfully"
         );
+        
+        #[cfg(feature = "metrics")]
+        metrics::counter!("tokio_events_published_total", "type" => T::event_type().to_string()).increment(1);
 
         Ok(event_id)
     }

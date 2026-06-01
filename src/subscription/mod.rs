@@ -185,7 +185,16 @@ impl SubscriptionManager {
                                         attempt = attempt + 1,
                                         "Executing handler"
                                     );
-                                    match handler.handle(&envelope_clone).await {
+                                    let start_time = std::time::Instant::now();
+                                    let result = handler.handle(&envelope_clone).await;
+                                    
+                                    #[cfg(feature = "metrics")]
+                                    {
+                                        let elapsed = start_time.elapsed().as_secs_f64();
+                                        metrics::histogram!("tokio_events_dispatch_duration_seconds", "type" => envelope_clone.event_type().to_string()).record(elapsed);
+                                    }
+
+                                    match result {
                                         Ok(()) => {
                                             registry_clone.increment_processed(sub_id);
                                             registry_clone.ack_event(sub_id, envelope_clone.event_id());
@@ -193,10 +202,18 @@ impl SubscriptionManager {
                                                 subscription_id = %sub_id,
                                                 "Handler executed successfully"
                                             );
+                                            
+                                            #[cfg(feature = "metrics")]
+                                            metrics::counter!("tokio_events_dispatched_total", "type" => envelope_clone.event_type().to_string()).increment(1);
+                                            
                                             break;
                                         }
                                         Err(e) => {
                                             attempt += 1;
+                                            
+                                            #[cfg(feature = "metrics")]
+                                            metrics::counter!("tokio_events_handler_errors_total", "type" => envelope_clone.event_type().to_string()).increment(1);
+                                            
                                             if attempt > max_retries {
                                                 error!(
                                                     subscription_id = %sub_id,
@@ -208,6 +225,9 @@ impl SubscriptionManager {
                                                 // Send to DLQ if configured
                                                 if let Some(dlq) = &dlq_tx {
                                                     let _ = dlq.send(envelope_clone.clone()).await;
+                                                    
+                                                    #[cfg(feature = "metrics")]
+                                                    metrics::counter!("tokio_events_dlq_total", "type" => envelope_clone.event_type().to_string()).increment(1);
                                                 }
                                                 
                                                 // We must still ack the event so it gets removed from the dispatcher/persistence

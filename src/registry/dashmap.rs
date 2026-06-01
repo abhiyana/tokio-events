@@ -80,6 +80,9 @@ impl EventRegistry for DashMapRegistry {
             subscription_id = %subscription.id,
             "Subscription registered successfully"
         );
+        
+        #[cfg(feature = "metrics")]
+        metrics::gauge!("tokio_events_subscriptions_active").increment(1.0);
 
         Ok(())
     }
@@ -108,6 +111,10 @@ impl EventRegistry for DashMapRegistry {
         }
 
         debug!(subscription_id = %subscription_id, "Subscription unregistered");
+        
+        #[cfg(feature = "metrics")]
+        metrics::gauge!("tokio_events_subscriptions_active").decrement(1.0);
+        
         Ok(())
     }
 

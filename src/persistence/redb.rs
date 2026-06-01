@@ -163,13 +163,21 @@ impl EventRegistry for RedbRegistry {
     }
 }
 
+/// Message sent to the background RedbDispatcher worker
+#[derive(Debug)]
+pub struct RedbDispatcherMessage {
+    envelope: Arc<EventEnvelope>,
+    ack_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
 /// A dispatcher that writes events to redb before passing them to the subscription manager
 #[allow(missing_debug_implementations)]
 pub struct RedbDispatcher {
     db: Arc<Database>,
     config: DispatcherConfig,
-    sender: Option<mpsc::Sender<Arc<EventEnvelope>>>,
-    receiver: Option<mpsc::Receiver<Arc<EventEnvelope>>>,
+    wait_for_persistence: bool,
+    sender: Option<mpsc::Sender<RedbDispatcherMessage>>,
+    receiver: Option<mpsc::Receiver<RedbDispatcherMessage>>,
     subscription_manager: Arc<SubscriptionManager>,
     worker_handle: Option<JoinHandle<()>>,
     is_running: Arc<AtomicBool>,
@@ -184,6 +192,7 @@ impl RedbDispatcher {
     pub fn new(
         db: Arc<Database>,
         config: DispatcherConfig,
+        wait_for_persistence: bool,
         subscription_manager: Arc<SubscriptionManager>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(config.max_queue_size);
@@ -191,6 +200,7 @@ impl RedbDispatcher {
         Self {
             db,
             config,
+            wait_for_persistence,
             sender: Some(sender),
             receiver: Some(receiver),
             subscription_manager,
@@ -207,7 +217,7 @@ impl RedbDispatcher {
     #[allow(clippy::too_many_arguments)]
     async fn process_events(
         db: Arc<Database>,
-        mut receiver: mpsc::Receiver<Arc<EventEnvelope>>,
+        mut receiver: mpsc::Receiver<RedbDispatcherMessage>,
         subscription_manager: Arc<SubscriptionManager>,
         is_running: Arc<AtomicBool>,
         events_dispatched: Arc<AtomicU64>,
@@ -217,10 +227,13 @@ impl RedbDispatcher {
     ) {
         info!("Redb dispatcher worker started");
 
-        while let Some(event) = receiver.recv().await {
+        while let Some(msg) = receiver.recv().await {
             if !is_running.load(Ordering::SeqCst) {
                 break;
             }
+
+            let event = msg.envelope;
+            let ack_tx = msg.ack_tx;
 
             let start = Instant::now();
             let event_id = event.event_id();
@@ -273,6 +286,14 @@ impl RedbDispatcher {
                             dispatch_errors.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
+                        
+                        // If wait_for_persistence is enabled, signal the publisher that the disk write is complete!
+                        if let Some(tx) = ack_tx {
+                            let _ = tx.send(());
+                        }
+                        
+                        #[cfg(feature = "metrics")]
+                        metrics::counter!("tokio_events_persistence_writes_total", "type" => event.event_type().to_string()).increment(1);
                     }
                     Err(e) => {
                         error!("Failed to serialize event for persistence: {}", e);
@@ -388,10 +409,27 @@ impl EventDispatcher for RedbDispatcher {
             self.max_queue_size.store(current_size as u64, Ordering::Relaxed);
         }
 
-        if self.config.drop_on_full {
-            sender.try_send(Arc::new(envelope)).map_err(|_| Error::internal("Channel full"))
+        if self.wait_for_persistence {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: Some(tx) };
+            
+            if self.config.drop_on_full {
+                sender.try_send(msg).map_err(|_| Error::internal("Channel full"))?;
+            } else {
+                sender.send(msg).await.map_err(|_| Error::internal("Channel closed"))?;
+            }
+            
+            // Wait for physical disk confirmation!
+            let _ = rx.await;
+            Ok(())
         } else {
-            sender.send(Arc::new(envelope)).await.map_err(|_| Error::internal("Channel closed"))
+            let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: None };
+            
+            if self.config.drop_on_full {
+                sender.try_send(msg).map_err(|_| Error::internal("Channel full"))
+            } else {
+                sender.send(msg).await.map_err(|_| Error::internal("Channel closed"))
+            }
         }
     }
 
@@ -415,6 +453,7 @@ impl EventDispatcher for RedbDispatcher {
                 };
 
                 let mut count = 0;
+                let mut dead_events = Vec::new();
                 for event_entry in events.iter().map_err(|e| e.to_string())? {
                     let (event_id_access, payload_access) =
                         event_entry.map_err(|e| e.to_string())?;
@@ -428,26 +467,64 @@ impl EventDispatcher for RedbDispatcher {
                             if let Ok(persisted) =
                                 serde_json::from_slice::<PersistedEnvelope>(bytes)
                             {
-                                // Find the TypeId
+                                // Find the TypeId and check if there are ANY active subscribers
+                                let mut has_subscribers = false;
                                 if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
-                                    // Reconstruct the EventEnvelope
-                                    let envelope = EventEnvelope::from_serialized(
-                                        type_id,
-                                        persisted.type_name,
-                                        persisted.metadata,
-                                        persisted.priority,
-                                        persisted.payload,
-                                    );
+                                    if registry.subscription_count(type_id) > 0 {
+                                        has_subscribers = true;
+                                        
+                                        // Reconstruct the EventEnvelope
+                                        let envelope = EventEnvelope::from_serialized(
+                                            type_id,
+                                            persisted.type_name,
+                                            persisted.metadata,
+                                            persisted.priority,
+                                            persisted.payload,
+                                        );
 
-                                    // Inject it directly into the memory channel
-                                    if sender.blocking_send(Arc::new(envelope)).is_ok() {
-                                        count += 1;
+                                        // Inject it directly into the memory channel
+                                        let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: None };
+                                        if sender.blocking_send(msg).is_ok() {
+                                            count += 1;
+                                        }
                                     }
                                 }
+                                
+                                // ZERO SUBSCRIBER FIX: If no handlers are listening, this event is dead
+                                if !has_subscribers {
+                                    dead_events.push(event_id_u128);
+                                }
+                            } else {
+                                // Corrupted payload, consider it dead
+                                dead_events.push(event_id_u128);
                             }
+                        } else {
+                            // Refcount is 0, consider it dead
+                            dead_events.push(event_id_u128);
                         }
                     }
                 }
+                
+                // Drop read transaction before opening write transaction
+                drop(events);
+                drop(refcounts);
+                drop(read_txn);
+
+                // Garbage collect all dead events!
+                if !dead_events.is_empty() {
+                    if let Ok(write_txn) = db.begin_write() {
+                        if let Ok(mut events) = write_txn.open_table(EVENTS_TABLE) {
+                            if let Ok(mut refcounts) = write_txn.open_table(REFCOUNT_TABLE) {
+                                for id in dead_events {
+                                    let _ = events.remove(id);
+                                    let _ = refcounts.remove(id);
+                                }
+                            }
+                        }
+                        let _ = write_txn.commit();
+                    }
+                }
+
                 Ok(count)
             })
             .await;

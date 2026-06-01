@@ -33,6 +33,14 @@ pub struct EventBusConfig {
     /// Controls how many permanently-failed events can be buffered in the DLQ
     /// before backpressure cascades into the retry loop.
     pub dlq_channel_size: usize,
+
+    /// Whether publish() should wait for disk persistence
+    /// 
+    /// If true, `.publish()` will block until the event is durably written to the
+    /// physical hard drive. This guarantees zero data loss but reduces publish throughput.
+    /// If false (default), `.publish()` returns instantly as soon as the event hits the
+    /// memory queue.
+    pub wait_for_persistence: bool,
 }
 
 impl Default for EventBusConfig {
@@ -45,6 +53,7 @@ impl Default for EventBusConfig {
             enable_tracing: true,
             handler_channel_size: 256,
             dlq_channel_size: 1000,
+            wait_for_persistence: false,
         }
     }
 }
@@ -97,6 +106,12 @@ impl EventBusConfig {
     /// Set DLQ channel buffer size
     pub fn dlq_channel_size(mut self, size: usize) -> Self {
         self.dlq_channel_size = size;
+        self
+    }
+
+    /// Set whether publish should wait for disk persistence
+    pub fn wait_for_persistence(mut self, wait: bool) -> Self {
+        self.wait_for_persistence = wait;
         self
     }
 }

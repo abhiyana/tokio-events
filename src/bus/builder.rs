@@ -7,6 +7,10 @@ use crate::subscription::SubscriptionManager;
 use crate::{EventBus, Result};
 use std::sync::Arc;
 use tracing::info;
+use crate::EventEnvelope;
+
+/// Type alias for DLQ hook function
+pub type DlqHook = Box<dyn Fn(Arc<EventEnvelope>) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
 /// Builder for creating EventBus instances
 #[allow(missing_debug_implementations)]
@@ -20,6 +24,8 @@ pub struct EventBusBuilder {
 
     #[cfg(feature = "persistence")]
     redb_path: Option<std::path::PathBuf>,
+
+    dlq_handler: Option<DlqHook>,
 }
 
 impl EventBusBuilder {
@@ -33,6 +39,7 @@ impl EventBusBuilder {
             redb: None,
             #[cfg(feature = "persistence")]
             redb_path: None,
+            dlq_handler: None,
         }
     }
 
@@ -96,6 +103,24 @@ impl EventBusBuilder {
         self.config(EventBusConfig::ordered())
     }
 
+    /// Set whether publish should wait for disk persistence
+    pub fn wait_for_persistence(mut self, wait: bool) -> Self {
+        self.config.wait_for_persistence = wait;
+        self
+    }
+
+    /// Attach a custom handler for Dead Letter Queue (DLQ) events.
+    /// This closure will automatically be called for any event that permanently
+    /// fails all retries.
+    pub fn with_dlq_handler<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(Arc<EventEnvelope>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.dlq_handler = Some(Box::new(move |env| Box::pin(handler(env))));
+        self
+    }
+
     /// Build the EventBus
     pub async fn build(self) -> Result<EventBus> {
         info!("Building EventBus");
@@ -143,6 +168,19 @@ impl EventBusBuilder {
 
         let (dlq_tx, dlq_rx) = tokio::sync::mpsc::channel(self.config.dlq_channel_size);
         sm.set_dlq(dlq_tx);
+        
+        let mut dlq_rx_opt = Some(dlq_rx);
+        
+        // If a custom DLQ handler was provided, spawn a background task to consume the DLQ automatically!
+        if let Some(dlq_hook) = self.dlq_handler {
+            let mut rx = dlq_rx_opt.take().unwrap();
+            let handler = Arc::new(dlq_hook);
+            tokio::spawn(async move {
+                while let Some(poison_pill) = rx.recv().await {
+                    handler(poison_pill).await;
+                }
+            });
+        }
 
         let subscription_manager = Arc::new(sm);
 
@@ -168,6 +206,7 @@ impl EventBusBuilder {
             Box::new(crate::persistence::RedbDispatcher::new(
                 db.clone(),
                 self.config.dispatcher.clone(),
+                self.config.wait_for_persistence,
                 subscription_manager.clone(),
             )) as Box<dyn EventDispatcher>
         } else {
@@ -189,7 +228,7 @@ impl EventBusBuilder {
             dispatcher: Arc::new(tokio::sync::Mutex::new(Some(dispatcher))),
             shutdown_hooks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            dlq_rx: Arc::new(tokio::sync::Mutex::new(Some(dlq_rx))),
+            dlq_rx: Arc::new(tokio::sync::Mutex::new(dlq_rx_opt)),
         };
 
         info!("EventBus built successfully");

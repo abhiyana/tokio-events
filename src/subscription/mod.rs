@@ -185,7 +185,9 @@ impl SubscriptionManager {
                                         attempt = attempt + 1,
                                         "Executing handler"
                                     );
+                                    #[cfg(feature = "metrics")]
                                     let start_time = std::time::Instant::now();
+                                    
                                     let result = handler.handle(&envelope_clone).await;
                                     
                                     #[cfg(feature = "metrics")]

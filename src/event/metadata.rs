@@ -33,6 +33,9 @@ pub struct EventMetadata {
 
     /// Custom metadata as key-value pairs
     pub custom: HashMap<String, String>,
+
+    /// Optional scheduled delivery timestamp. If set, the event will not be delivered until this time.
+    pub deliver_at: Option<DateTime<Utc>>,
 }
 
 impl EventMetadata {
@@ -47,6 +50,7 @@ impl EventMetadata {
             user_id: None,
             session_id: None,
             custom: HashMap::new(),
+            deliver_at: None,
         }
     }
 
@@ -87,9 +91,21 @@ impl EventMetadata {
         self
     }
 
-    /// Add custom metadata
-    pub fn add_custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    /// Add a custom metadata field
+    pub fn with_custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.custom.insert(key.into(), value.into());
+        self
+    }
+
+    /// Schedule this event to be delivered at an exact future time
+    pub fn schedule_at(mut self, time: DateTime<Utc>) -> Self {
+        self.deliver_at = Some(time);
+        self
+    }
+
+    /// Delay this event from being delivered for a specific duration
+    pub fn delay(mut self, duration: std::time::Duration) -> Self {
+        self.deliver_at = Some(Utc::now() + duration);
         self
     }
 

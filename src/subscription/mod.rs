@@ -102,6 +102,11 @@ impl SubscriptionManager {
         self.dlq_tx = Some(dlq_tx);
     }
 
+    /// Get the DLQ sender if configured
+    pub(crate) fn dlq_tx(&self) -> Option<tokio::sync::mpsc::Sender<Arc<EventEnvelope>>> {
+        self.dlq_tx.clone()
+    }
+
     /// Set the event receiver channel
     pub fn set_event_receiver(
         &mut self,
@@ -537,6 +542,12 @@ mod tests {
     impl Event for TestEvent {
         fn event_type() -> &'static str {
             "TestEvent"
+        }
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

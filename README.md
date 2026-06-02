@@ -1,70 +1,148 @@
 # tokio-events
 
-A modern, type-safe async event bus for Rust applications built on Tokio.
+[![Crates.io](https://img.shields.io/crates/v/tokio-events)](https://crates.io/crates/tokio-events)
+[![Documentation](https://docs.rs/tokio-events/badge.svg)](https://docs.rs/tokio-events)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![image](https://github.com/abhiyana/tokio-events/blob/main/docs/eventhighlevel.png)
+A modern, type-safe, asynchronous event bus for Rust applications built on `tokio`. 
 
-## Quick Example
+`tokio-events` scales seamlessly from a simple in-memory pub/sub channel in a monolith, all the way to a strictly-typed, distributed, persistent event architecture across microservices.
+
+## Features
+
+- **Type-safe:** Subscriptions are strictly typed. If you subscribe to `UserCreated`, your handler receives `UserCreated`—no manual downcasting required.
+- **Async-First:** Built entirely on `tokio` for massive concurrency and minimal overhead.
+- **Progressive Enhancement:** Start with an in-memory bus, and optionally turn on `redb` disk persistence or `NATS JetStream` network routing with 2 lines of config.
+- **Strict Schema Enforcement:** (Optional) Natively supports `prost` Protobuf serialization to guarantee zero breaking schema changes across your network.
+- **Resilient:** Implements the [Transactional Outbox Pattern](https://microservices.io/patterns/data/transactional-outbox.html), Dead Letter Queues (DLQ), and automatic retries.
+
+## Quick Start (In-Memory JSON)
+
+Add the dependency to your `Cargo.toml`:
+```toml
+[dependencies]
+tokio-events = "0.2.3"
+```
+
+Define an event, create the bus, and publish!
 
 ```rust
-let bus = EventBus::builder()
+use tokio_events::prelude::*;
+
+// 1. Define your Event (Defaults to JSON serialization)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
+struct UserCreated {
+    id: u64,
+    email: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 2. Build the in-memory Event Bus
+    let bus = EventBusBuilder::new().build().await?;
+
+    // 3. Subscribe to the event
+    let _handle = bus.subscribe(|event: UserCreated| async move {
+        println!("New user registered! Sending email to: {}", event.email);
+    }).await?;
+
+    // 4. Publish the event
+    bus.publish(UserCreated {
+        id: 42,
+        email: "alice@example.com".to_string(),
+    }).await?;
+
+    Ok(())
+}
+```
+
+---
+
+## Feature Flags
+
+`tokio-events` uses feature flags to keep your binary size small. 
+
+| Feature | Description | Dependencies |
+|---------|-------------|--------------|
+| `macros` | (Default) Enables the `#[derive(Event)]` macro. | `tokio-events-macros` |
+| `persistence` | Enables embedded `redb` disk persistence for the Outbox Pattern. | `redb` |
+| `remote` | Enables distributed network routing via `async-nats` JetStream. | `async-nats` |
+| `protobuf` | Enables strict schema enforcement via `prost::Message`. | `prost` |
+| `metrics` | Enables internal telemetry metrics. | `metrics` |
+
+---
+
+## Advanced: Disk Persistence (The Outbox Pattern)
+
+If your app crashes immediately after taking payment but before sending the `OrderConfirmed` event, you lose data. `tokio-events` solves this by natively integrating with `redb` (a pure-Rust embedded database).
+
+Enable the feature:
+```toml
+tokio-events = { version = "0.2.3", features = ["persistence"] }
+```
+
+Initialize the bus with disk persistence:
+```rust
+let bus = EventBusBuilder::new()
+    .with_redb_persistence("events.db")
+    // If the server crashes, un-ACK'd events are loaded from disk and replayed on boot!
+    .build()
+    .await?;
+```
+
+---
+
+## Advanced: Distributed Network (NATS JetStream)
+
+Want to route events across microservices? Enable the `remote` feature, derive the `Remote` trait, and `tokio-events` will automatically route your events over NATS JetStream.
+
+Enable the feature:
+```toml
+tokio-events = { version = "0.2.3", features = ["remote"] }
+```
+
+Define the routing topic:
+```rust
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event, Remote)]
+#[remote(topic = "user.created.v1")] // NATS Topic
+struct UserCreated {
+    id: u64,
+}
+```
+
+Publish over the network:
+```rust
+let bus = EventBusBuilder::new()
+    // Connect to NATS JetStream stream "ENTERPRISE_EVENTS"
+    .with_nats_jetstream("nats://localhost:4222", "ENTERPRISE_EVENTS", vec!["user.>".to_string()])
     .build()
     .await?;
 
-// Subscribe to events
-bus.subscribe(|event: UserRegistered| async {
-    println!("New user: {}", event.email);
-}).await?;
-
-// Publish events
-bus.publish(UserRegistered {
-    id: 123,
-    email: "user@example.com".into(),
-}).await?;
+// This publishes to local subscribers AND the NATS network!
+bus.publish_remote(UserCreated { id: 42 }).await?;
 ```
 
-# Core Components
+---
 
-## 1. EventBus – The Main API
-- Single instance shared across your application  
-- Provides `publish()` and `subscribe()` methods  
-- Manages component lifecycle  
+## Advanced: Strict Schema Enforcement (Protobuf)
 
-## 2. Registry – Type Mapping
-- Maps event types to their subscribers  
-- Uses `TypeId` for type-safe routing  
-- Thread-safe using `DashMap`  
+When 10 microservices share events over NATS, changing a JSON field name can cause cascading outages (Poison Pills). `tokio-events` supports native Protobuf serialization to guarantee schema safety.
 
-## 3. Dispatcher – Event Queue
-- MPSC channel for queuing events  
-- Worker thread processes events  
-- Configurable queue size and backpressure  
-
-## 4. Subscription Manager – Handler Execution
-- Stores active handlers  
-- Spawns async tasks for parallel execution  
-- Manages subscription lifecycle  
-
-
-
-![image](https://github.com/abhiyana/tokio-events/blob/main/docs/eventflow.png)
+Enable the feature:
+```toml
+tokio-events = { version = "0.2.3", features = ["protobuf", "remote"] }
 ```
-publish(UserRegistered) 
-    ↓
-Create EventEnvelope (type erasure)
-    ↓
-Send to channel (Arc wrap)
-    ↓
-Worker receives
-    ↓
-Lookup by TypeId → Find handlers
-    ↓
-Spawn tasks (parallel)
-    ↓
-Each handler:
-  - Downcast to UserRegistered
-  - Execute user function
-  - Update metrics
-    ↓
-Cleanup (Arc refcount → 0)
+
+Tag your struct with `#[event(format = "protobuf")]`:
+```rust
+#[derive(Clone, PartialEq, prost::Message, Event, Remote)]
+#[event(format = "protobuf")] // The macro injects strict prost serialization!
+#[remote(topic = "user.protobuf.v1")]
+struct UserUpdated {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(string, tag = "2")]
+    pub email: String,
+}
 ```
+Now, `bus.publish_remote(event)` will emit highly optimized binary Protobuf bytes over the network instead of JSON!

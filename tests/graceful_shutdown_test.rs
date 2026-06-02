@@ -2,15 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct SlowEvent {
     id: u64,
-}
-
-impl Event for SlowEvent {
-    fn event_type() -> &'static str {
-        "SlowEvent"
-    }
 }
 
 #[tokio::test]

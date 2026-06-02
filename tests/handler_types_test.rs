@@ -2,15 +2,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct BasicEvent {
     value: usize,
-}
-
-impl Event for BasicEvent {
-    fn event_type() -> &'static str {
-        "BasicEvent"
-    }
 }
 
 struct CustomStructHandler {

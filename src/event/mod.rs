@@ -22,28 +22,29 @@ pub use metadata::EventMetadata;
 ///
 /// ```rust
 /// use tokio_events::Event;
+/// use uuid::Uuid;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Debug, Clone, Serialize, Deserialize)]
+/// #[derive(Clone, Debug, Event, Serialize, Deserialize)]
 /// struct UserRegistered {
-///     user_id: u64,
+///     user_id: Uuid,
 ///     email: String,
 /// }
-///
-/// impl Event for UserRegistered {
-///     fn event_type() -> &'static str {
-///         "UserRegistered"
-///     }
-/// }
 /// ```
-pub trait Event:
-    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + Clone + Debug + 'static
-{
+pub trait Event: Send + Sync + Clone + Debug + 'static {
     /// Returns the type name of this event.
     ///
     /// This is used for debugging and logging purposes.
     /// It should be a stable, unique identifier for the event type.
     fn event_type() -> &'static str
+    where
+        Self: Sized;
+
+    /// Serialize the event to raw bytes (e.g., JSON or Protobuf)
+    fn serialize_event(&self) -> crate::Result<Vec<u8>>;
+
+    /// Deserialize the event from raw bytes
+    fn deserialize_event(bytes: &[u8]) -> crate::Result<Self>
     where
         Self: Sized;
 
@@ -66,7 +67,7 @@ pub trait Event:
 }
 
 /// A marker trait for events that can be serialized to JSON easily.
-pub trait JsonSerializableEvent: Event {
+pub trait JsonSerializableEvent: Event + serde::Serialize + serde::de::DeserializeOwned {
     /// Serialize this event to JSON
     fn to_json(&self) -> crate::Result<String> {
         serde_json::to_string(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
@@ -82,7 +83,7 @@ pub trait JsonSerializableEvent: Event {
 }
 
 // Blanket impl
-impl<T: Event> JsonSerializableEvent for T {}
+impl<T: Event + serde::Serialize + serde::de::DeserializeOwned> JsonSerializableEvent for T {}
 
 /// Priority levels for event handling.
 ///
@@ -135,10 +136,31 @@ impl Event for BroadcastEvent {
     fn event_type() -> &'static str {
         "BroadcastEvent"
     }
+
+    fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+        serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+    }
+
+    fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+        serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+    }
+}
+
+/// A trait for events that can be sent over a distributed network (e.g., NATS).
+///
+/// This trait extends the base `Event` trait and requires serialization capabilities.
+#[cfg(feature = "remote")]
+#[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+pub trait Remote: Event {
+    /// The unique routing topic for this event over the network.
+    ///
+    /// Must contain at least 3 segments separated by dots (e.g., `domain.service.entity.action`).
+    fn remote_topic() -> &'static str;
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate self as tokio_events;
     use super::*;
     use crate::event;
 
@@ -151,6 +173,14 @@ mod tests {
     impl Event for TestEvent {
         fn event_type() -> &'static str {
             "TestEvent"
+        }
+
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -180,5 +210,27 @@ mod tests {
         assert!(EventPriority::Critical > EventPriority::High);
         assert!(EventPriority::High > EventPriority::Normal);
         assert!(EventPriority::Normal > EventPriority::Low);
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn test_protobuf_core_serialization() {
+        #[derive(Clone, PartialEq, prost::Message, tokio_events_macros::Event)]
+        #[event(format = "protobuf")]
+        struct ProtoUnit {
+            #[prost(uint64, tag = "1")]
+            pub id: u64,
+        }
+
+        let event = ProtoUnit { id: 999 };
+        
+        // 1. Verify it serializes correctly using prost
+        let bytes = event.serialize_event().expect("Failed to serialize via protobuf");
+        assert!(!bytes.is_empty());
+
+        // 2. Verify it deserializes correctly
+        let reconstructed = ProtoUnit::deserialize_event(&bytes).expect("Failed to deserialize via protobuf");
+        assert_eq!(reconstructed.id, 999);
+        assert_eq!(ProtoUnit::event_type(), "ProtoUnit");
     }
 }

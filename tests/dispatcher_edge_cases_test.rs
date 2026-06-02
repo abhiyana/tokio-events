@@ -2,15 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct TestEvent {
     id: u64,
-}
-
-impl Event for TestEvent {
-    fn event_type() -> &'static str {
-        "TestEvent"
-    }
 }
 
 #[tokio::test]
@@ -31,7 +25,7 @@ async fn test_abrupt_shutdown_timeout() {
     config.shutdown_timeout = std::time::Duration::from_millis(50);
     
     let bus = tokio_events::bus::builder::EventBusBuilder::new()
-        .config(config)
+        .with_config(config)
         .build()
         .await
         .unwrap();
@@ -62,7 +56,7 @@ async fn test_queue_overflow_drop() {
         .dispatcher_config(|cfg| cfg.max_queue_size(2).drop_on_full(true));
 
     let bus = tokio_events::bus::builder::EventBusBuilder::new()
-        .config(config)
+        .with_config(config)
         .build()
         .await
         .unwrap();
@@ -106,7 +100,7 @@ async fn test_queue_overflow_backpressure() {
         .dispatcher_config(|cfg| cfg.max_queue_size(2).drop_on_full(false));
 
     let bus = tokio_events::bus::builder::EventBusBuilder::new()
-        .config(config)
+        .with_config(config)
         .build()
         .await
         .unwrap();

@@ -226,6 +226,27 @@ impl EventDispatcher for ChannelDispatcher {
             return Err(Error::internal("Dispatcher not running"));
         }
 
+        // If the event is scheduled for the future, spawn a sleep task.
+        if let Some(deliver_at) = envelope.metadata.deliver_at {
+            let now = chrono::Utc::now();
+            if deliver_at > now {
+                if let Ok(delay) = (deliver_at - now).to_std() {
+                    let sender_opt = self.sender.clone();
+                    let envelope_arc = Arc::new(envelope);
+                    
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        // After waking up, send it to the queue
+                        if let Some(sender) = sender_opt {
+                            let _ = sender.send(envelope_arc).await;
+                        }
+                    });
+                    
+                    return Ok(());
+                }
+            }
+        }
+
         let envelope = Arc::new(envelope);
 
         let sender = self.sender.as_ref().ok_or_else(|| Error::ShuttingDown)?;
@@ -293,6 +314,12 @@ mod tests {
     impl Event for TestEvent {
         fn event_type() -> &'static str {
             "TestEvent"
+        }
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

@@ -5,16 +5,10 @@ use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct CriticalEvent {
     id: Uuid,
     data: String,
-}
-
-impl Event for CriticalEvent {
-    fn event_type() -> &'static str {
-        "CriticalEvent"
-    }
 }
 
 #[tokio::test]
@@ -24,7 +18,7 @@ async fn test_redb_crash_recovery() {
 
     let event_id = Uuid::new_v4();
 
-    // PHASE 1: Create bus, register subscriber, publish event, but CRASH before it processes.
+    // PHASE 1: Publish a delayed event, then CRASH the server before it fires.
     {
         let bus = EventBus::builder()
             .with_redb_path(&db_path)
@@ -32,49 +26,35 @@ async fn test_redb_crash_recovery() {
             .await
             .unwrap();
 
-        // Subscribe but we will force drop the bus immediately after publish
-        // To make sure it doesn't process, we won't even give tokio time to yield
-        // Actually, we can just publish an event, and it writes synchronously to DB (wait, it writes in a blocking task)
-        // Let's create a subscriber that takes a long time, or just let it process.
-        // Wait, if it processes, it deletes the event! We need to stop it from processing.
-        // We can just build the dispatcher manually and insert it, OR
-        // simpler: subscribe with a handler that just sleeps forever!
+        // WE MUST SUBSCRIBE in Phase 1 so that the RedbDispatcher sees sub_count > 0
+        // Otherwise, it skips persisting the event!
+        let _sub1 = bus.subscribe(|_: CriticalEvent| async {}).await.unwrap();
 
-        let handler_started = Arc::new(tokio::sync::Notify::new());
-        let handler_started_clone = handler_started.clone();
-
-        let _sub = bus
-            .subscribe(move |_: CriticalEvent| {
-                let notify = handler_started_clone.clone();
-                async move {
-                    notify.notify_one();
-                    // Sleep forever so the event is never acked!
-                    tokio::time::sleep(tokio::time::Duration::from_secs(100)).await;
-                }
-            })
-            .await
-            .unwrap();
-
-        bus.publish(CriticalEvent {
+        // Publish with 5 seconds delay so it definitely doesn't fire while we are reconnecting
+        bus.publish_delayed(CriticalEvent {
             id: event_id,
             data: "important data".to_string(),
-        })
+        }, std::time::Duration::from_secs(5))
         .await
         .unwrap();
 
-        // Wait until the handler actually receives the event (which means it's written to DB and dispatched)
-        handler_started.notified().await;
+        // Wait a tiny bit to ensure it wrote to disk
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Crash! We drop the bus. The task is aborted. The event was NEVER acked.
+        // CRASH! Drop the bus, aborting the scheduler.
         bus.shutdown().await.unwrap();
     }
 
     // Give some time for DB file handles to clear
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // PHASE 2: Restart the app, re-attach to the same DB file.
+    // PHASE 2: Restart the app. The background scheduler should automatically recover and fire the event!
     {
+        let mut config = tokio_events::bus::config::EventBusConfig::default();
+        config.scheduler_tick_rate = std::time::Duration::from_secs(1); // Tick every 1 second
+        
         let bus = EventBus::builder()
+            .with_config(config)
             .with_redb_path(&db_path)
             .build()
             .await
@@ -83,7 +63,7 @@ async fn test_redb_crash_recovery() {
         let received_count = Arc::new(AtomicUsize::new(0));
         let received_clone = received_count.clone();
 
-        // Register the subscriber again
+        // Register the subscriber
         let _sub = bus
             .subscribe(move |event: CriticalEvent| {
                 let counter = received_clone.clone();
@@ -96,11 +76,8 @@ async fn test_redb_crash_recovery() {
             .await
             .unwrap();
 
-        // Trigger crash recovery!
-        bus.replay_pending().await.unwrap();
-
-        // Wait for the replay to finish
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait 6 seconds for the scheduled event to fire (5s original delay + margin)
+        tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
 
         assert_eq!(received_count.load(Ordering::Relaxed), 1);
 
@@ -158,7 +135,7 @@ async fn test_redb_concurrent_workers() {
     config = config.dispatcher_config(|d| d.worker_threads(4));
 
     let bus = EventBus::builder()
-        .config(config)
+        .with_config(config)
         .with_redb_path(&db_path)
         .build()
         .await

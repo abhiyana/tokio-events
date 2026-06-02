@@ -69,6 +69,12 @@ mod tests {
         fn event_type() -> &'static str {
             "GlobalTestEvent"
         }
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
     }
 
     #[tokio::test]

@@ -1,14 +1,8 @@
 use tokio_events::{Event, EventBus};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct MyEvent {
     pub message: String,
-}
-
-impl Event for MyEvent {
-    fn event_type() -> &'static str {
-        "MyEvent"
-    }
 }
 
 #[tokio::main]

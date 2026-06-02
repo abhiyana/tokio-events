@@ -26,6 +26,17 @@ pub struct EventBusBuilder {
     redb_path: Option<std::path::PathBuf>,
 
     dlq_handler: Option<DlqHook>,
+
+    #[cfg(feature = "remote")]
+    nats_url: Option<String>,
+    
+    #[cfg(feature = "remote")]
+    nats_jetstream_name: Option<String>,
+
+    #[cfg(feature = "remote")]
+    nats_jetstream_subjects: Option<Vec<String>>,
+    #[cfg(feature = "remote")]
+    custom_transport: Option<std::sync::Arc<dyn crate::remote::RemoteTransport>>,
 }
 
 impl EventBusBuilder {
@@ -40,12 +51,28 @@ impl EventBusBuilder {
             #[cfg(feature = "persistence")]
             redb_path: None,
             dlq_handler: None,
+            #[cfg(feature = "remote")]
+            nats_url: None,
+            #[cfg(feature = "remote")]
+            nats_jetstream_name: None,
+            #[cfg(feature = "remote")]
+            nats_jetstream_subjects: None,
+            #[cfg(feature = "remote")]
+            custom_transport: None,
         }
     }
 
-    /// Use a custom configuration
-    pub fn config(mut self, config: EventBusConfig) -> Self {
+    /// Set custom configuration
+    pub fn with_config(mut self, config: EventBusConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Set the scheduler tick rate for persistent scheduled events.
+    /// This controls how often the database is polled for delayed events.
+    /// Default is 1 second.
+    pub fn with_scheduler_tick_rate(mut self, rate: std::time::Duration) -> Self {
+        self.config.scheduler_tick_rate = rate;
         self
     }
 
@@ -90,17 +117,17 @@ impl EventBusBuilder {
 
     /// Build with high-throughput configuration
     pub fn high_throughput(self) -> Self {
-        self.config(EventBusConfig::high_throughput())
+        self.with_config(EventBusConfig::high_throughput())
     }
 
     /// Build with reliable processing configuration
     pub fn reliable(self) -> Self {
-        self.config(EventBusConfig::reliable())
+        self.with_config(EventBusConfig::reliable())
     }
 
     /// Build with ordered processing configuration
     pub fn ordered(self) -> Self {
-        self.config(EventBusConfig::ordered())
+        self.with_config(EventBusConfig::ordered())
     }
 
     /// Set whether publish should wait for disk persistence
@@ -118,6 +145,36 @@ impl EventBusBuilder {
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         self.dlq_handler = Some(Box::new(move |env| Box::pin(handler(env))));
+        self
+    }
+
+    /// Enable NATS transport for distributed remote events (Core NATS / Fire-and-Forget)
+    #[cfg(feature = "remote")]
+    pub fn with_nats_transport(mut self, url: impl Into<String>) -> Self {
+        self.nats_url = Some(url.into());
+        self.nats_jetstream_name = None;
+        self.nats_jetstream_subjects = None;
+        self
+    }
+
+    /// Enable NATS JetStream for persistent distributed remote events (Guaranteed Exactly-Once)
+    #[cfg(feature = "remote")]
+    pub fn with_nats_jetstream(
+        mut self,
+        url: impl Into<String>,
+        stream_name: impl Into<String>,
+        subjects: Vec<String>,
+    ) -> Self {
+        self.nats_url = Some(url.into());
+        self.nats_jetstream_name = Some(stream_name.into());
+        self.nats_jetstream_subjects = Some(subjects);
+        self
+    }
+
+    /// Provide a custom remote transport implementation (e.g. for testing)
+    #[cfg(feature = "remote")]
+    pub fn with_custom_transport(mut self, transport: std::sync::Arc<dyn crate::remote::RemoteTransport>) -> Self {
+        self.custom_transport = Some(transport);
         self
     }
 
@@ -207,6 +264,7 @@ impl EventBusBuilder {
                 db.clone(),
                 self.config.dispatcher.clone(),
                 self.config.wait_for_persistence,
+                self.config.scheduler_tick_rate,
                 subscription_manager.clone(),
             )) as Box<dyn EventDispatcher>
         } else {
@@ -220,6 +278,24 @@ impl EventBusBuilder {
         // Start the dispatcher
         dispatcher.start().await?;
 
+        // Initialize remote transport if configured
+        #[cfg(feature = "remote")]
+        let remote_transport = if let Some(custom) = self.custom_transport {
+            Some(custom)
+        } else if let Some(url) = &self.nats_url {
+            if let (Some(stream_name), Some(subjects)) = (&self.nats_jetstream_name, &self.nats_jetstream_subjects) {
+                info!("Connecting to NATS JetStream at {} with stream: {}", url, stream_name);
+                let transport = crate::remote::nats::NatsTransport::connect_jetstream(url, stream_name, subjects.clone()).await?;
+                Some(Arc::new(transport) as Arc<dyn crate::remote::RemoteTransport>)
+            } else {
+                info!("Connecting to Core NATS at {}", url);
+                let transport = crate::remote::nats::NatsTransport::connect(url).await?;
+                Some(Arc::new(transport) as Arc<dyn crate::remote::RemoteTransport>)
+            }
+        } else {
+            None
+        };
+
         // Create the event bus
         let bus = EventBus {
             config: self.config,
@@ -229,6 +305,9 @@ impl EventBusBuilder {
             shutdown_hooks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dlq_rx: Arc::new(tokio::sync::Mutex::new(dlq_rx_opt)),
+            
+            #[cfg(feature = "remote")]
+            remote_transport,
         };
 
         info!("EventBus built successfully");
@@ -266,5 +345,27 @@ mod tests {
 
         // Ordered
         let _bus = EventBusBuilder::new().ordered().build().await.unwrap();
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test]
+    async fn test_builder_nats_config_overrides() {
+        // Test with_nats_transport clears JetStream config
+        let builder = EventBusBuilder::new()
+            .with_nats_jetstream("nats://local", "STREAM", vec!["test".to_string()])
+            .with_nats_transport("nats://core");
+            
+        assert_eq!(builder.nats_url, Some("nats://core".to_string()));
+        assert!(builder.nats_jetstream_name.is_none());
+        assert!(builder.nats_jetstream_subjects.is_none());
+
+        // Test with_nats_jetstream sets JetStream config correctly
+        let builder = EventBusBuilder::new()
+            .with_nats_transport("nats://core")
+            .with_nats_jetstream("nats://js", "JS_STREAM", vec!["subject.>".to_string()]);
+            
+        assert_eq!(builder.nats_url, Some("nats://js".to_string()));
+        assert_eq!(builder.nats_jetstream_name, Some("JS_STREAM".to_string()));
+        assert_eq!(builder.nats_jetstream_subjects, Some(vec!["subject.>".to_string()]));
     }
 }

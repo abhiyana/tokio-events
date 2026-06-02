@@ -41,6 +41,10 @@ pub struct EventBusConfig {
     /// If false (default), `.publish()` returns instantly as soon as the event hits the
     /// memory queue.
     pub wait_for_persistence: bool,
+
+    /// How often the persistent scheduler polls for delayed events.
+    /// Default is 1 second. Lowering this increases precision but uses more CPU.
+    pub scheduler_tick_rate: Duration,
 }
 
 impl Default for EventBusConfig {
@@ -54,6 +58,7 @@ impl Default for EventBusConfig {
             handler_channel_size: 256,
             dlq_channel_size: 1000,
             wait_for_persistence: false,
+            scheduler_tick_rate: Duration::from_secs(1),
         }
     }
 }
@@ -143,6 +148,7 @@ impl EventBusConfig {
             .retry_backoff(Duration::from_millis(500))
             .handler_channel_size(512)
             .dlq_channel_size(5000)
+            .wait_for_persistence(true)
     }
 
     /// Configuration for ordered processing (single worker)
@@ -165,6 +171,36 @@ impl EventBusConfig {
             .shutdown_timeout(Duration::from_secs(5))
             .enable_tracing(false)
             .handler_channel_size(64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_high_throughput_config() {
+        let config = EventBusConfig::high_throughput();
+        assert_eq!(config.dispatcher.worker_threads, num_cpus::get() * 2);
+        assert_eq!(config.dispatcher.max_queue_size, 50_000);
+        assert_eq!(config.handler_channel_size, 1024);
+        assert_eq!(config.max_retries, 1); // Fast failure
+        assert_eq!(config.wait_for_persistence, false); // Maximum speed over reliability
+    }
+
+    #[test]
+    fn test_reliable_config() {
+        let config = EventBusConfig::reliable();
+        assert_eq!(config.wait_for_persistence, true); // Strict disk synching
+        assert_eq!(config.max_retries, 5); // Must retry heavily
+        assert_eq!(config.dispatcher.drop_on_full, false); // Cannot drop events
+    }
+
+    #[test]
+    fn test_ordered_config() {
+        let config = EventBusConfig::ordered();
+        assert_eq!(config.dispatcher.worker_threads, 1); // Exact ordered single-threading
+        assert_eq!(config.dispatcher.drop_on_full, false);
     }
 }
 

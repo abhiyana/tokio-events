@@ -2,26 +2,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio_events::{Event, EventBus};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct FlakyEvent {
-    id: u32,
+    id: usize,
 }
 
-impl Event for FlakyEvent {
-    fn event_type() -> &'static str {
-        "FlakyEvent"
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct PoisonEvent {
-    id: u32,
-}
-
-impl Event for PoisonEvent {
-    fn event_type() -> &'static str {
-        "PoisonEvent"
-    }
+    id: usize,
 }
 
 #[tokio::test]

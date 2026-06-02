@@ -37,6 +37,7 @@ type ShutdownHook = Box<dyn Fn() -> futures::future::BoxFuture<'static, Result<(
 ///
 /// ```rust,ignore
 /// use tokio_events::{EventBus, Event};
+/// use std::sync::Arc;
 ///
 /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 /// struct MyEvent { data: String }
@@ -73,6 +74,9 @@ pub struct EventBus {
     pub(crate) shutdown_hooks: Arc<Mutex<Vec<ShutdownHook>>>,
     pub(crate) is_shutting_down: Arc<AtomicBool>,
     pub(crate) dlq_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>>>>,
+    
+    #[cfg(feature = "remote")]
+    pub(crate) remote_transport: Option<Arc<dyn crate::remote::RemoteTransport>>,
 }
 
 impl EventBus {
@@ -133,6 +137,26 @@ impl EventBus {
         Ok(event_id)
     }
 
+    /// Publish an event with a specific delay before it is routed to subscribers.
+    pub async fn publish_delayed<T: Event>(
+        &self,
+        event: T,
+        delay: std::time::Duration,
+    ) -> Result<Uuid> {
+        let metadata = EventMetadata::new().delay(delay);
+        self.publish_with_metadata(event, metadata).await
+    }
+
+    /// Publish an event scheduled for an exact future time.
+    pub async fn publish_scheduled<T: Event>(
+        &self,
+        event: T,
+        deliver_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Uuid> {
+        let metadata = EventMetadata::new().schedule_at(deliver_at);
+        self.publish_with_metadata(event, metadata).await
+    }
+
     /// Subscribe to events of a specific type
     pub async fn subscribe<T, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
     where
@@ -178,6 +202,73 @@ impl EventBus {
         self.subscription_manager.subscribe::<T, H>(handler).await
     }
 
+    /// Subscribe to a distributed event over the remote network (e.g. NATS).
+    ///
+    /// This routes both LOCAL and REMOTE events to the provided handler.
+    /// The `queue_group` ensures that if multiple instances of this microservice are running,
+    /// only one instance processes each remote event (load balancing).
+    #[cfg(feature = "remote")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+    pub async fn subscribe_remote<T, F, Fut>(
+        &self,
+        queue_group: &str,
+        handler: F,
+    ) -> Result<SubscriptionHandle>
+    where
+        T: crate::event::Remote,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        // 1. Subscribe locally first
+        let handle = self.subscribe(handler).await?;
+        
+        // 2. Connect the inbound network stream to the local dispatcher
+        if let Some(transport) = &self.remote_transport {
+            use futures::StreamExt;
+            
+            let topic = T::remote_topic();
+            let mut stream = transport.subscribe(topic, queue_group).await?;
+            
+            // We need a clone of the event bus to publish inbound events locally
+            let local_bus = self.clone();
+            let queue_group_owned = queue_group.to_string();
+            
+            tokio::spawn(async move {
+                tracing::info!("Started Remote Consumer Loop for topic: {} (group: {})", topic, queue_group_owned);
+                
+                while let Some(bytes) = stream.next().await {
+                    match T::deserialize_event(&bytes) {
+                        Ok(event) => {
+                            // Successfully deserialized! Inject it into the local memory bus.
+                            if let Err(e) = local_bus.publish(event).await {
+                                tracing::error!("Failed to route remote event locally: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            // MITIGATION: Network Poison Pill DLQ
+                            tracing::error!("Failed to deserialize remote event on topic {}: {}", topic, e);
+                            
+                            if let Some(dlq_tx) = local_bus.subscription_manager.dlq_tx() {
+                                let mut envelope = EventEnvelope::new(
+                                    crate::event::BroadcastEvent { message: "Poison Pill".to_string() }
+                                );
+                                envelope.payload_bytes = Some(bytes);
+                                
+                                let _ = dlq_tx.send(Arc::new(envelope)).await;
+                            }
+                        }
+                    }
+                }
+                
+                tracing::info!("Remote Consumer Loop stopped for topic: {}", topic);
+            });
+        } else {
+            tracing::warn!("subscribe_remote called without a remote_transport configured! Only listening locally.");
+        }
+        
+        Ok(handle)
+    }
+
     /// Unsubscribe a handler
     pub async fn unsubscribe(&self, handle: SubscriptionHandle) -> Result<()> {
         self.subscription_manager.unsubscribe(handle).await
@@ -190,12 +281,117 @@ impl EventBus {
     /// and inject them into the memory queues of the currently active subscribers.
     /// If you do not use the `persistence` feature, this method does nothing.
     pub async fn replay_pending(&self) -> Result<()> {
-        let guard = self.dispatcher.lock().await;
-        if let Some(dispatcher) = guard.as_ref() {
+        let mut dispatcher_guard = self.dispatcher.lock().await;
+        if let Some(dispatcher) = dispatcher_guard.as_mut() {
             dispatcher.replay_pending().await
         } else {
-            Err(Error::ShuttingDown)
+            Err(Error::internal("Dispatcher has been shut down"))
         }
+    }
+
+    /// Publish a distributed event over the remote network (e.g. NATS).
+    ///
+    /// This utilizes the Outbox pattern. The event is first published locally
+    /// (to ensure disk persistence if configured) and then dispatched over the network.
+    #[cfg(feature = "remote")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+    pub async fn publish_remote<T: crate::event::Remote>(&self, event: T) -> Result<Uuid> {
+        let topic = T::remote_topic();
+        let payload = event.serialize_event()?;
+            
+        // 1. We ALWAYS route it locally first!
+        // This is the Outbox Pattern: it ensures the event is saved to redb (if configured)
+        // and routed to any local subscribers before we hit the network.
+        let event_id = self.publish(event).await?;
+        
+        // 2. We route it over the network
+        if let Some(transport) = &self.remote_transport {
+            let msg_id = event_id.to_string();
+            // We pass the envelope ID as the `msg_id` for NATS exactly-once deduplication!
+            transport.publish(topic, &payload, Some(&msg_id)).await?;
+        } else {
+            tracing::warn!("publish_remote called on EventBus without a remote_transport configured! Event {} was only routed locally.", event_id);
+        }
+
+        Ok(event_id)
+    }
+
+    /// Publish a distributed event over the remote network (e.g. NATS) with a specific delay.
+    ///
+    /// **Caveat**: The delay is held locally in memory before crossing the network. If this server
+    /// crashes during the delay, the event will safely fire locally on reboot, but the NATS
+    /// network publish will be lost.
+    #[cfg(feature = "remote")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+    pub async fn publish_remote_delayed<T: crate::event::Remote>(
+        &self,
+        event: T,
+        delay: std::time::Duration,
+    ) -> Result<Uuid> {
+        let topic = T::remote_topic();
+        let payload = event.serialize_event()?;
+            
+        // 1. Publish locally WITH the delay (This guarantees local crash resilience via Redb)
+        let event_id = self.publish_delayed(event, delay).await?;
+        
+        // 2. Schedule the network publish
+        if let Some(transport) = &self.remote_transport {
+            let msg_id = event_id.to_string();
+            let transport_clone = transport.clone();
+            let topic_owned = topic.to_string();
+            
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                if let Err(e) = transport_clone.publish(&topic_owned, &payload, Some(&msg_id)).await {
+                    tracing::error!("Failed to route delayed remote event: {}", e);
+                }
+            });
+        }
+
+        Ok(event_id)
+    }
+
+    /// Publish a distributed event over the remote network (e.g. NATS) scheduled for an exact time.
+    ///
+    /// **Caveat**: The delay is held locally in memory before crossing the network. If this server
+    /// crashes during the delay, the event will safely fire locally on reboot, but the NATS
+    /// network publish will be lost.
+    #[cfg(feature = "remote")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+    pub async fn publish_remote_scheduled<T: crate::event::Remote>(
+        &self,
+        event: T,
+        deliver_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Uuid> {
+        let topic = T::remote_topic();
+        let payload = event.serialize_event()?;
+            
+        // 1. Publish locally WITH the schedule
+        let event_id = self.publish_scheduled(event, deliver_at).await?;
+        
+        // 2. Schedule the network publish
+        if let Some(transport) = &self.remote_transport {
+            let now = chrono::Utc::now();
+            let msg_id = event_id.to_string();
+            let transport_clone = transport.clone();
+            let topic_owned = topic.to_string();
+
+            if deliver_at > now {
+                if let Ok(delay) = (deliver_at - now).to_std() {
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        if let Err(e) = transport_clone.publish(&topic_owned, &payload, Some(&msg_id)).await {
+                            tracing::error!("Failed to route scheduled remote event: {}", e);
+                        }
+                    });
+                }
+            } else {
+                // Time has already passed, publish immediately
+                transport.publish(&topic, &payload, Some(&msg_id)).await?;
+            }
+        }
+
+        Ok(event_id)
     }
 
     /// Get statistics about the event bus
@@ -351,6 +547,12 @@ mod tests {
     impl Event for TestEvent {
         fn event_type() -> &'static str {
             "TestEvent"
+        }
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

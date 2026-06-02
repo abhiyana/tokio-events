@@ -31,6 +31,8 @@ pub struct PersistedEnvelope {
 
 const EVENTS_TABLE: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("events");
 const REFCOUNT_TABLE: TableDefinition<'_, u128, u32> = TableDefinition::new("refcount");
+/// Scheduled events. Key is (timestamp_ms, event_id). This allows automatic chronological sorting.
+const SCHEDULED_EVENTS_TABLE: TableDefinition<'_, (u64, u128), &[u8]> = TableDefinition::new("scheduled_events");
 
 /// A registry that wraps an in-memory registry and intercepts acks to update redb
 #[derive(Debug)]
@@ -176,10 +178,12 @@ pub struct RedbDispatcher {
     db: Arc<Database>,
     config: DispatcherConfig,
     wait_for_persistence: bool,
+    scheduler_tick_rate: std::time::Duration,
     sender: Option<mpsc::Sender<RedbDispatcherMessage>>,
     receiver: Option<mpsc::Receiver<RedbDispatcherMessage>>,
     subscription_manager: Arc<SubscriptionManager>,
     worker_handle: Option<JoinHandle<()>>,
+    scheduler_handle: Option<JoinHandle<()>>,
     is_running: Arc<AtomicBool>,
     events_dispatched: Arc<AtomicU64>,
     dispatch_errors: Arc<AtomicU64>,
@@ -193,6 +197,7 @@ impl RedbDispatcher {
         db: Arc<Database>,
         config: DispatcherConfig,
         wait_for_persistence: bool,
+        scheduler_tick_rate: std::time::Duration,
         subscription_manager: Arc<SubscriptionManager>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(config.max_queue_size);
@@ -201,10 +206,12 @@ impl RedbDispatcher {
             db,
             config,
             wait_for_persistence,
+            scheduler_tick_rate,
             sender: Some(sender),
             receiver: Some(receiver),
             subscription_manager,
             worker_handle: None,
+            scheduler_handle: None,
             is_running: Arc::new(AtomicBool::new(false)),
             events_dispatched: Arc::new(AtomicU64::new(0)),
             dispatch_errors: Arc::new(AtomicU64::new(0)),
@@ -258,23 +265,35 @@ impl RedbDispatcher {
                         .map_err(|e| crate::Error::SerializationError(e.to_string()))
                 }) {
                     Ok(bytes) => {
+                        let is_scheduled = event.metadata.deliver_at.map(|d| d > chrono::Utc::now()).unwrap_or(false);
+                        let deliver_at_ms = event.metadata.deliver_at.map(|d| d.timestamp_millis() as u64).unwrap_or(0);
+
                         let write_txn_res = tokio::task::spawn_blocking({
                             let db = db.clone();
                             move || -> std::result::Result<(), String> {
                                 let write_txn = db.begin_write().map_err(|e| e.to_string())?;
                                 {
-                                    let mut events = write_txn
-                                        .open_table(EVENTS_TABLE)
-                                        .map_err(|e| e.to_string())?;
-                                    let mut refcounts = write_txn
-                                        .open_table(REFCOUNT_TABLE)
-                                        .map_err(|e| e.to_string())?;
-                                    events
-                                        .insert(event_id_u128, bytes.as_slice())
-                                        .map_err(|e| e.to_string())?;
-                                    refcounts
-                                        .insert(event_id_u128, sub_count)
-                                        .map_err(|e| e.to_string())?;
+                                    if is_scheduled {
+                                        let mut scheduled_events = write_txn
+                                            .open_table(SCHEDULED_EVENTS_TABLE)
+                                            .map_err(|e| e.to_string())?;
+                                        scheduled_events
+                                            .insert((deliver_at_ms, event_id_u128), bytes.as_slice())
+                                            .map_err(|e| e.to_string())?;
+                                    } else {
+                                        let mut events = write_txn
+                                            .open_table(EVENTS_TABLE)
+                                            .map_err(|e| e.to_string())?;
+                                        let mut refcounts = write_txn
+                                            .open_table(REFCOUNT_TABLE)
+                                            .map_err(|e| e.to_string())?;
+                                        events
+                                            .insert(event_id_u128, bytes.as_slice())
+                                            .map_err(|e| e.to_string())?;
+                                        refcounts
+                                            .insert(event_id_u128, sub_count)
+                                            .map_err(|e| e.to_string())?;
+                                    }
                                 }
                                 write_txn.commit().map_err(|e| e.to_string())
                             }
@@ -294,6 +313,11 @@ impl RedbDispatcher {
                         
                         #[cfg(feature = "metrics")]
                         metrics::counter!("tokio_events_persistence_writes_total", "type" => event.event_type().to_string()).increment(1);
+
+                        // If it's a scheduled event, we are done! The Poller will pick it up later.
+                        if is_scheduled {
+                            continue;
+                        }
                     }
                     Err(e) => {
                         error!("Failed to serialize event for persistence: {}", e);
@@ -334,6 +358,95 @@ impl RedbDispatcher {
 
         info!("Redb dispatcher worker stopped");
     }
+
+    /// Background task to poll the scheduled events table and dispatch expired events
+    async fn scheduler_loop(
+        db: Arc<Database>,
+        is_running: Arc<AtomicBool>,
+        tick_rate: std::time::Duration,
+        sender: mpsc::Sender<RedbDispatcherMessage>,
+        registry: Arc<dyn EventRegistry>,
+    ) {
+        info!("Redb scheduled events poller started (tick rate: {:?})", tick_rate);
+        
+        while is_running.load(Ordering::SeqCst) {
+            tokio::time::sleep(tick_rate).await;
+            if !is_running.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            let db_clone = db.clone();
+            
+            let pull_res = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<PersistedEnvelope>, String> {
+                let mut ready_events = Vec::new();
+                
+                let write_txn = db_clone.begin_write().map_err(|e| e.to_string())?;
+                {
+                    let mut scheduled_table = match write_txn.open_table(SCHEDULED_EVENTS_TABLE) {
+                        Ok(t) => t,
+                        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(ready_events),
+                        Err(e) => return Err(e.to_string()),
+                    };
+
+                    let mut to_remove = Vec::new();
+                    
+                    if let Ok(iter) = scheduled_table.iter() {
+                        for entry_res in iter {
+                            if let Ok((key, val)) = entry_res {
+                                let (ts, id) = key.value();
+                                if ts <= now_ms {
+                                    if let Ok(persisted) = serde_json::from_slice::<PersistedEnvelope>(val.value()) {
+                                        ready_events.push(persisted);
+                                    }
+                                    to_remove.push((ts, id));
+                                } else {
+                                    // Because the table is sorted by timestamp, as soon as we hit a future timestamp,
+                                    // we know all subsequent records are also in the future.
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    for key in to_remove {
+                        let _ = scheduled_table.remove(key);
+                    }
+                }
+                
+                write_txn.commit().map_err(|e| e.to_string())?;
+                Ok(ready_events)
+            }).await;
+
+            match pull_res {
+                Ok(Ok(events)) => {
+                    for mut persisted in events {
+                        if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
+                            if registry.subscription_count(type_id) > 0 {
+                                // Strip the deliver_at so it doesn't get re-scheduled when sent to process_events
+                                persisted.metadata.deliver_at = None;
+                                
+                                let envelope = EventEnvelope::from_serialized(
+                                    type_id,
+                                    persisted.type_name,
+                                    persisted.metadata,
+                                    persisted.priority,
+                                    persisted.payload,
+                                );
+                                
+                                let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: None };
+                                let _ = sender.send(msg).await;
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => error!("Scheduler DB error: {}", e),
+                Err(e) => error!("Scheduler task panic: {}", e),
+            }
+        }
+        
+        info!("Redb scheduled events poller stopped");
+    }
 }
 
 #[async_trait]
@@ -367,6 +480,16 @@ impl EventDispatcher for RedbDispatcher {
                 )
                 .await;
             }));
+
+            // Spawn the scheduler loop!
+            let sender = self.sender.clone().unwrap();
+            self.scheduler_handle = Some(tokio::spawn(Self::scheduler_loop(
+                self.db.clone(),
+                self.is_running.clone(),
+                self.scheduler_tick_rate,
+                sender,
+                self.subscription_manager.registry(),
+            )));
         }
 
         Ok(())
@@ -379,12 +502,24 @@ impl EventDispatcher for RedbDispatcher {
         if let Some(handle) = self.worker_handle.take() {
             let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await;
         }
+        
+        if let Some(handle) = self.scheduler_handle.take() {
+            let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await;
+        }
 
         Ok(())
     }
 
     async fn shutdown_gracefully(&mut self) -> Result<()> {
         info!("Shutting down Redb dispatcher gracefully");
+
+        // We MUST abort the scheduler before waiting for the worker!
+        // The scheduler holds a clone of `sender`. If it runs forever, the channel
+        // is never fully closed, and the worker will block forever waiting on recv().
+        if let Some(handle) = self.scheduler_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
 
         self.sender.take(); // Close channel so recv() returns None
 
@@ -560,6 +695,106 @@ impl EventDispatcher for RedbDispatcher {
             dispatch_errors: self.dispatch_errors.load(Ordering::Relaxed),
             avg_dispatch_time_us: avg_time,
             max_queue_size: self.max_queue_size.load(Ordering::Relaxed) as usize,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn create_test_db() -> Arc<Database> {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.redb");
+        
+        let db = Database::create(path).unwrap();
+        let write_txn = db.begin_write().unwrap();
+        {
+            let _ = write_txn.open_table(EVENTS_TABLE).unwrap();
+            let _ = write_txn.open_table(REFCOUNT_TABLE).unwrap();
+        }
+        write_txn.commit().unwrap();
+        
+        Arc::new(db)
+    }
+
+    #[tokio::test]
+    async fn test_redb_corrupted_data_recovery() {
+        let db = create_test_db();
+        
+        // Inject purely malformed data directly into the redb tables
+        let id1_val = Uuid::new_v4().as_u128();
+        let write_txn = db.begin_write().unwrap();
+        {
+            let mut events = write_txn.open_table(EVENTS_TABLE).unwrap();
+            let mut refcounts = write_txn.open_table(REFCOUNT_TABLE).unwrap();
+            
+            events.insert(id1_val, b"{{this is definitely not valid json".as_slice()).unwrap();
+            refcounts.insert(id1_val, 1).unwrap();
+        }
+        write_txn.commit().unwrap();
+
+        // The internal RedbDispatcher should load, encounter the corrupted JSON, log an error,
+        // add the event to dead_events, and silently DELETE it during the load sequence!
+        let registry: Arc<dyn EventRegistry> = Arc::new(DashMapRegistry::new());
+        let manager = Arc::new(crate::subscription::SubscriptionManager::new(registry, 3, std::time::Duration::from_millis(10)));
+        let dispatcher = RedbDispatcher::new(db.clone(), DispatcherConfig::default(), false, std::time::Duration::from_secs(1), manager);
+        
+        dispatcher.replay_pending().await.unwrap();
+        
+        // Wait a tiny bit for the spawn_blocking to finish
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // The corrupted event should have been garbage collected
+        let read_txn = db.begin_read().unwrap();
+        let events = read_txn.open_table(EVENTS_TABLE).unwrap();
+        assert!(events.get(id1_val).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_redb_registry_refcounts() {
+        let db = create_test_db();
+        let inner = Arc::new(DashMapRegistry::new());
+        let registry = RedbRegistry::new(db.clone(), inner);
+        
+        // Manually inject an event refcount of 2
+        let id1 = Uuid::new_v4();
+        let write_txn = db.begin_write().unwrap();
+        {
+            let mut events = write_txn.open_table(EVENTS_TABLE).unwrap();
+            let mut refcounts = write_txn.open_table(REFCOUNT_TABLE).unwrap();
+            events.insert(id1.as_u128(), b"{}".as_slice()).unwrap();
+            refcounts.insert(id1.as_u128(), 2).unwrap();
+        }
+        write_txn.commit().unwrap();
+
+        // Ack once (should drop refcount to 1, but not delete event)
+        registry.ack_tx.send(id1).unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // give background task time to run
+        
+        let read_txn = db.begin_read().unwrap();
+        {
+            let refcounts = read_txn.open_table(REFCOUNT_TABLE).unwrap();
+            let count = refcounts.get(id1.as_u128()).unwrap().unwrap().value();
+            assert_eq!(count, 1);
+            
+            let events = read_txn.open_table(EVENTS_TABLE).unwrap();
+            assert!(events.get(id1.as_u128()).unwrap().is_some());
+        }
+        drop(read_txn);
+
+        // Ack twice (should drop refcount to 0, and DELETE event)
+        registry.ack_tx.send(id1).unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        let read_txn = db.begin_read().unwrap();
+        {
+            let refcounts = read_txn.open_table(REFCOUNT_TABLE).unwrap();
+            assert!(refcounts.get(id1.as_u128()).unwrap().is_none());
+            
+            let events = read_txn.open_table(EVENTS_TABLE).unwrap();
+            assert!(events.get(id1.as_u128()).unwrap().is_none());
         }
     }
 }

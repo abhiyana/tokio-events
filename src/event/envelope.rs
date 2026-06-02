@@ -15,7 +15,7 @@ pub struct EventEnvelope {
     payload: Option<Arc<dyn Any + Send + Sync>>,
 
     /// The serialized event payload (Some if loaded from disk)
-    payload_bytes: Option<Vec<u8>>,
+    pub(crate) payload_bytes: Option<Vec<u8>>,
 
     /// Function to serialize the in-memory payload
     serializer: fn(&Arc<dyn Any + Send + Sync>) -> crate::Result<Vec<u8>>,
@@ -49,14 +49,18 @@ impl EventEnvelope {
                 let event = any.downcast_ref::<T>().ok_or_else(|| {
                     crate::Error::internal("Failed to downcast for serialization")
                 })?;
-                serde_json::to_vec(event)
-                    .map_err(|e| crate::Error::SerializationError(e.to_string()))
+                event.serialize_event()
             },
             type_id: T::type_id(),
             type_name: T::event_type().to_string(),
             metadata,
             priority: EventPriority::default(),
         }
+    }
+
+    /// Get the raw network bytes if available (e.g., for DLQ inspection)
+    pub fn payload_bytes(&self) -> Option<&[u8]> {
+        self.payload_bytes.as_deref()
     }
 
     /// Create a new envelope with custom metadata and priority
@@ -70,8 +74,7 @@ impl EventEnvelope {
                 let event = any.downcast_ref::<T>().ok_or_else(|| {
                     crate::Error::internal("Failed to downcast for serialization")
                 })?;
-                serde_json::to_vec(event)
-                    .map_err(|e| crate::Error::SerializationError(e.to_string()))
+                event.serialize_event()
             },
             type_id: T::type_id(),
             type_name: T::event_type().to_string(),
@@ -139,8 +142,7 @@ impl EventEnvelope {
 
         if let Some(bytes) = &self.payload_bytes {
             // It was loaded from disk, deserialize it
-            return serde_json::from_slice(bytes)
-                .map_err(|e| crate::Error::SerializationError(e.to_string()));
+            return T::deserialize_event(bytes);
         }
 
         Err(crate::Error::internal("Event envelope is empty"))
@@ -287,6 +289,12 @@ mod tests {
         fn event_type() -> &'static str {
             "TestEvent"
         }
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
     }
 
     // Note: String cannot easily implement Event if it requires Serialize without a newtype.
@@ -297,6 +305,12 @@ mod tests {
     impl Event for StringEvent {
         fn event_type() -> &'static str {
             "StringEvent"
+        }
+        fn serialize_event(&self) -> crate::Result<Vec<u8>> {
+            serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
+        }
+        fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
+            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -371,5 +385,20 @@ mod tests {
             child_envelope.metadata.correlation_id,
             Some(parent_envelope.event_id())
         );
+    }
+
+    #[test]
+    fn test_envelope_poison_pill() {
+        // Create an envelope with a fallback type for the poison pill
+        let mut envelope = EventEnvelope::new(
+            crate::event::BroadcastEvent { message: "Poison Pill".to_string() }
+        );
+        
+        // Override the payload bytes with the raw poison pill
+        let broken_bytes = b"{\"broken\": \"json\"";
+        envelope.payload_bytes = Some(broken_bytes.to_vec());
+        
+        // We can access the payload bytes for the DLQ to inspect
+        assert_eq!(envelope.payload_bytes.as_deref(), Some(broken_bytes.as_slice()));
     }
 }

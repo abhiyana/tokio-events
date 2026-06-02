@@ -14,6 +14,15 @@ pub enum Error {
     #[error("Failed to publish event: {0}")]
     PublishError(String),
 
+    /// Payload size exceeds the configured maximum
+    #[error("Payload too large: {size} bytes exceeds maximum of {max} bytes")]
+    PayloadTooLarge {
+        /// The size of the payload
+        size: usize,
+        /// The maximum allowed size
+        max: usize,
+    },
+
     /// Subscription failed
     #[error("Failed to subscribe: {0}")]
     SubscriptionError(String),

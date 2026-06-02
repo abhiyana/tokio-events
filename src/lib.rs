@@ -11,19 +11,15 @@
 //!
 //! ## Quick Example
 //!
-//! ```rust,no_run
-//! use tokio_events::{Event, EventBus};
+//! ```rust
+//! use tokio_events::{EventBus, Event};
+//! use uuid::Uuid;
+//! use serde::{Serialize, Deserialize};
 //!
-//! #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+//! #[derive(Clone, Debug, Event, Serialize, Deserialize)]
 //! struct UserRegistered {
-//!     user_id: u64,
+//!     user_id: Uuid,
 //!     email: String,
-//! }
-//!
-//! impl Event for UserRegistered {
-//!     fn event_type() -> &'static str {
-//!         "UserRegistered"
-//!     }
 //! }
 //!
 //! #[tokio::main]
@@ -38,7 +34,7 @@
 //!
 //!     // Publish events
 //!     bus.publish(UserRegistered {
-//!         user_id: 123,
+//!         user_id: Uuid::new_v4(),
 //!         email: "user@example.com".to_string(),
 //!     }).await?;
 //!
@@ -81,15 +77,24 @@ pub mod global;
 #[cfg_attr(docsrs, doc(cfg(feature = "persistence")))]
 pub mod persistence;
 
+/// Remote transport engines (e.g., NATS) for distributed event buses.
+#[cfg(feature = "remote")]
+#[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+pub mod remote;
+
 // Re-export commonly used types
 pub use bus::{EventBus, EventBusBuilder};
 pub use error::{Error, Result};
 pub use event::{Event, EventEnvelope, EventMetadata, EventPriority, HasPriority};
+
+#[cfg(feature = "remote")]
+#[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
+pub use event::Remote;
 pub use subscription::{EventHandler, SubscriptionHandle};
 
 #[cfg(feature = "macros")]
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
-pub use tokio_events_macros::Event;
+pub use tokio_events_macros::{Event, Remote};
 
 /// Prelude module for convenient imports
 ///
@@ -101,8 +106,12 @@ pub mod prelude {
     pub use crate::bus::{EventBus, EventBusBuilder};
     pub use crate::error::{Error, Result};
     pub use crate::event::{Event, EventPriority, HasPriority};
+    
+    #[cfg(feature = "remote")]
+    pub use crate::event::Remote;
+
     pub use crate::subscription::SubscriptionHandle;
 
     #[cfg(feature = "macros")]
-    pub use tokio_events_macros::Event;
+    pub use tokio_events_macros::{Event, Remote};
 }

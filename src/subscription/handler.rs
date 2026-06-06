@@ -10,6 +10,9 @@ use std::sync::Arc;
 /// Type alias for a boxed future that handlers return
 pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
+/// Type alias for an event filter function
+pub type EventFilterFn = Arc<dyn Fn(&EventEnvelope) -> bool + Send + Sync>;
+
 /// Trait for event handlers that can process events asynchronously.
 #[async_trait]
 pub trait EventHandler: Send + Sync + 'static {
@@ -21,9 +24,30 @@ pub trait EventHandler: Send + Sync + 'static {
         "unnamed"
     }
 
-    /// Called when the handler is being shut down
+    /// Handle a shutdown signal.
+    ///
+    /// This method is called exactly once when the event bus is shutting down.
+    /// Handlers can use this to flush buffers, close network connections, or clean up resources.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on successful shutdown.
     async fn on_shutdown(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Provide an optional event filter.
+    ///
+    /// The event bus will call this filter synchronously during dispatch.
+    /// If the filter returns `false`, the event is dropped instantly without
+    /// ever consuming channel capacity.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(closure)` if filtering is enabled, or `None` if the handler
+    /// accepts all events it is registered for.
+    fn filter(&self) -> Option<EventFilterFn> {
+        None
     }
 }
 
@@ -180,9 +204,7 @@ where
 {
     async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
         match envelope.get_event::<T>() {
-            Ok(event) => {
-                (self.function)(event).await
-            }
+            Ok(event) => (self.function)(event).await,
             Err(_) => Err(Error::EventNotRegistered {
                 type_name: envelope.event_type().to_string(),
             }),
@@ -198,19 +220,25 @@ where
 #[allow(missing_debug_implementations)]
 pub struct FilteredHandler<H: EventHandler> {
     inner: H,
-    filter: Box<dyn Fn(&EventEnvelope) -> bool + Send + Sync>,
+    filter: Arc<dyn Fn(&EventEnvelope) -> bool + Send + Sync>,
     _filter_name: String,
 }
 
 impl<H: EventHandler> FilteredHandler<H> {
-    /// Create a new filtered handler
+    /// Create a new filtered handler.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The underlying handler to execute if the filter passes.
+    /// * `filter` - A closure that takes an `EventEnvelope` and returns `true` to keep the event, or `false` to drop it.
+    /// * `filter_name` - A string identifier for tracing and debugging.
     pub fn new<F>(inner: H, filter: F, filter_name: impl Into<String>) -> Self
     where
         F: Fn(&EventEnvelope) -> bool + Send + Sync + 'static,
     {
         Self {
             inner,
-            filter: Box::new(filter),
+            filter: Arc::new(filter),
             _filter_name: filter_name.into(),
         }
     }
@@ -228,6 +256,10 @@ impl<H: EventHandler> EventHandler for FilteredHandler<H> {
 
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn filter(&self) -> Option<EventFilterFn> {
+        Some(self.filter.clone())
     }
 }
 
@@ -312,7 +344,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

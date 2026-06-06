@@ -4,15 +4,36 @@ use crate::bus::config::EventBusConfig;
 use crate::dispatcher::{ChannelDispatcher, EventDispatcher};
 use crate::registry::{DashMapRegistry, EventRegistry};
 use crate::subscription::SubscriptionManager;
+use crate::EventEnvelope;
 use crate::{EventBus, Result};
 use std::sync::Arc;
 use tracing::info;
-use crate::EventEnvelope;
 
 /// Type alias for DLQ hook function
-pub type DlqHook = Box<dyn Fn(Arc<EventEnvelope>) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+pub type DlqHook =
+    Box<dyn Fn(Arc<EventEnvelope>) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
-/// Builder for creating EventBus instances
+/// Builder pattern for constructing `EventBus` instances.
+///
+/// The `EventBusBuilder` provides a fluent API for configuring the event bus
+/// before it is instantiated. It allows configuring dispatchers, storage backends
+/// (e.g. Redb persistence), remote transports (e.g. NATS JetStream), and default configurations.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use tokio_events::bus::builder::EventBusBuilder;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let bus = EventBusBuilder::new()
+///         .reliable() // Configure for reliable delivery with retries
+///         .with_redb_path("events.db") // Enable persistent storage
+///         .build()
+///         .await
+///         .unwrap();
+/// }
+/// ```
 #[allow(missing_debug_implementations)]
 pub struct EventBusBuilder {
     config: EventBusConfig,
@@ -29,7 +50,7 @@ pub struct EventBusBuilder {
 
     #[cfg(feature = "remote")]
     nats_url: Option<String>,
-    
+
     #[cfg(feature = "remote")]
     nats_jetstream_name: Option<String>,
 
@@ -62,7 +83,7 @@ impl EventBusBuilder {
         }
     }
 
-    /// Set custom configuration
+    /// Apply a custom `EventBusConfig` overriding all default settings.
     pub fn with_config(mut self, config: EventBusConfig) -> Self {
         self.config = config;
         self
@@ -76,7 +97,10 @@ impl EventBusBuilder {
         self
     }
 
-    /// Configure the event bus
+    /// Configure the event bus using a closure.
+    ///
+    /// This is useful for modifying specific settings on the default configuration
+    /// without replacing the entire `EventBusConfig`.
     pub fn configure<F>(mut self, f: F) -> Self
     where
         F: FnOnce(EventBusConfig) -> EventBusConfig,
@@ -115,7 +139,10 @@ impl EventBusBuilder {
         self
     }
 
-    /// Build with high-throughput configuration
+    /// Build with a high-throughput configuration profile.
+    ///
+    /// This preset prioritizes performance over strict durability by increasing
+    /// buffer sizes and worker counts.
     pub fn high_throughput(self) -> Self {
         self.with_config(EventBusConfig::high_throughput())
     }
@@ -173,12 +200,28 @@ impl EventBusBuilder {
 
     /// Provide a custom remote transport implementation (e.g. for testing)
     #[cfg(feature = "remote")]
-    pub fn with_custom_transport(mut self, transport: std::sync::Arc<dyn crate::remote::RemoteTransport>) -> Self {
+    pub fn with_custom_transport(
+        mut self,
+        transport: std::sync::Arc<dyn crate::remote::RemoteTransport>,
+    ) -> Self {
         self.custom_transport = Some(transport);
         self
     }
 
-    /// Build the EventBus
+    /// Construct the `EventBus` instance based on the provided configuration.
+    ///
+    /// This method performs all necessary asynchronous setup, such as initializing
+    /// the database, establishing network connections for remote transport, and
+    /// starting the background dispatcher worker tasks.
+    ///
+    /// # Returns
+    ///
+    /// Returns the fully initialized `EventBus`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying database cannot be opened, or if the
+    /// remote transport fails to connect.
     pub async fn build(self) -> Result<EventBus> {
         info!("Building EventBus");
 
@@ -225,9 +268,9 @@ impl EventBusBuilder {
 
         let (dlq_tx, dlq_rx) = tokio::sync::mpsc::channel(self.config.dlq_channel_size);
         sm.set_dlq(dlq_tx);
-        
+
         let mut dlq_rx_opt = Some(dlq_rx);
-        
+
         // If a custom DLQ handler was provided, spawn a background task to consume the DLQ automatically!
         if let Some(dlq_hook) = self.dlq_handler {
             let mut rx = dlq_rx_opt.take().unwrap();
@@ -283,9 +326,19 @@ impl EventBusBuilder {
         let remote_transport = if let Some(custom) = self.custom_transport {
             Some(custom)
         } else if let Some(url) = &self.nats_url {
-            if let (Some(stream_name), Some(subjects)) = (&self.nats_jetstream_name, &self.nats_jetstream_subjects) {
-                info!("Connecting to NATS JetStream at {} with stream: {}", url, stream_name);
-                let transport = crate::remote::nats::NatsTransport::connect_jetstream(url, stream_name, subjects.clone()).await?;
+            if let (Some(stream_name), Some(subjects)) =
+                (&self.nats_jetstream_name, &self.nats_jetstream_subjects)
+            {
+                info!(
+                    "Connecting to NATS JetStream at {} with stream: {}",
+                    url, stream_name
+                );
+                let transport = crate::remote::nats::NatsTransport::connect_jetstream(
+                    url,
+                    stream_name,
+                    subjects.clone(),
+                )
+                .await?;
                 Some(Arc::new(transport) as Arc<dyn crate::remote::RemoteTransport>)
             } else {
                 info!("Connecting to Core NATS at {}", url);
@@ -301,11 +354,11 @@ impl EventBusBuilder {
             config: self.config,
             registry,
             subscription_manager,
-            dispatcher: Arc::new(tokio::sync::Mutex::new(Some(dispatcher))),
+            dispatcher: Arc::new(tokio::sync::RwLock::new(Some(dispatcher))),
             shutdown_hooks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dlq_rx: Arc::new(tokio::sync::Mutex::new(dlq_rx_opt)),
-            
+
             #[cfg(feature = "remote")]
             remote_transport,
         };
@@ -354,7 +407,7 @@ mod tests {
         let builder = EventBusBuilder::new()
             .with_nats_jetstream("nats://local", "STREAM", vec!["test".to_string()])
             .with_nats_transport("nats://core");
-            
+
         assert_eq!(builder.nats_url, Some("nats://core".to_string()));
         assert!(builder.nats_jetstream_name.is_none());
         assert!(builder.nats_jetstream_subjects.is_none());
@@ -363,9 +416,12 @@ mod tests {
         let builder = EventBusBuilder::new()
             .with_nats_transport("nats://core")
             .with_nats_jetstream("nats://js", "JS_STREAM", vec!["subject.>".to_string()]);
-            
+
         assert_eq!(builder.nats_url, Some("nats://js".to_string()));
         assert_eq!(builder.nats_jetstream_name, Some("JS_STREAM".to_string()));
-        assert_eq!(builder.nats_jetstream_subjects, Some(vec!["subject.>".to_string()]));
+        assert_eq!(
+            builder.nats_jetstream_subjects,
+            Some(vec!["subject.>".to_string()])
+        );
     }
 }

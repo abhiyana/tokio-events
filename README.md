@@ -96,6 +96,24 @@ let bus = EventBusBuilder::new()
 
 Want to route events across microservices? Enable the `remote` feature, derive the `Remote` trait, and `tokio-events` will automatically route your events over NATS JetStream.
 
+```mermaid
+graph LR
+    subgraph Microservice A
+        Publisher[EventBus::publish_remote]
+    end
+    
+    subgraph Network
+        NATS((NATS JetStream))
+    end
+    
+    subgraph Microservice B
+        Consumer[EventBus::subscribe_remote]
+    end
+    
+    Publisher -- "Serialize -> Bytes" --> NATS
+    NATS -- "Bytes -> Deserialize" --> Consumer
+```
+
 Enable the feature:
 ```toml
 tokio-events = { version = "0.2.3", features = ["remote"] }

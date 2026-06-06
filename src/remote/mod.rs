@@ -22,28 +22,41 @@ pub trait RemoteTransport: Send + Sync + 'static {
     /// the broker load-balances the events so each event is only processed by one instance.
     ///
     /// Returns a stream of raw bytes received from the network.
-    async fn subscribe(&self, topic: &str, queue_group: &str) -> Result<futures::stream::BoxStream<'static, Vec<u8>>>;
+    async fn subscribe(
+        &self,
+        topic: &str,
+        queue_group: &str,
+    ) -> Result<futures::stream::BoxStream<'static, (Vec<u8>, tokio::sync::oneshot::Sender<()>)>>;
 }
 
 #[cfg(test)]
 #[cfg(feature = "remote")]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use futures::stream;
+    use std::sync::{Arc, Mutex};
 
     struct MockTransport {
+        #[allow(clippy::type_complexity)]
         published: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
     }
 
     #[async_trait]
     impl RemoteTransport for MockTransport {
         async fn publish(&self, topic: &str, payload: &[u8], _msg_id: Option<&str>) -> Result<()> {
-            self.published.lock().unwrap().push((topic.to_string(), payload.to_vec()));
+            self.published
+                .lock()
+                .unwrap()
+                .push((topic.to_string(), payload.to_vec()));
             Ok(())
         }
 
-        async fn subscribe(&self, _topic: &str, _queue_group: &str) -> Result<futures::stream::BoxStream<'static, Vec<u8>>> {
+        async fn subscribe(
+            &self,
+            _topic: &str,
+            _queue_group: &str,
+        ) -> Result<futures::stream::BoxStream<'static, (Vec<u8>, tokio::sync::oneshot::Sender<()>)>>
+        {
             Ok(Box::pin(stream::empty()))
         }
     }
@@ -51,10 +64,15 @@ mod tests {
     #[tokio::test]
     async fn test_mock_transport_implementation() {
         let published = Arc::new(Mutex::new(Vec::new()));
-        let transport = MockTransport { published: published.clone() };
-        
-        transport.publish("user.created", b"{}", Some("uuid")).await.unwrap();
-        
+        let transport = MockTransport {
+            published: published.clone(),
+        };
+
+        transport
+            .publish("user.created", b"{}", Some("uuid"))
+            .await
+            .unwrap();
+
         let guard = published.lock().unwrap();
         assert_eq!(guard.len(), 1);
         assert_eq!(guard[0].0, "user.created");

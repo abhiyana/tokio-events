@@ -225,7 +225,15 @@ pub struct EnvelopeBuilder<T: Event> {
 }
 
 impl<T: Event> EnvelopeBuilder<T> {
-    /// Create a new envelope builder
+    /// Create a new envelope builder.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The event payload.
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `EnvelopeBuilder`.
     pub fn new(event: T) -> Self {
         Self {
             event,
@@ -234,13 +242,21 @@ impl<T: Event> EnvelopeBuilder<T> {
         }
     }
 
-    /// Set custom metadata
+    /// Set custom metadata for the event.
+    ///
+    /// # Arguments
+    ///
+    /// * `metadata` - The `EventMetadata` struct containing routing and tracing data.
     pub fn metadata(mut self, metadata: EventMetadata) -> Self {
         self.metadata = metadata;
         self
     }
 
-    /// Set correlation ID
+    /// Set the correlation ID for distributed tracing.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The correlation `Uuid`.
     pub fn correlation_id(mut self, id: uuid::Uuid) -> Self {
         self.metadata.correlation_id = Some(id);
         self
@@ -264,7 +280,11 @@ impl<T: Event> EnvelopeBuilder<T> {
         self
     }
 
-    /// Build the envelope
+    /// Build the final `EventEnvelope`.
+    ///
+    /// # Returns
+    ///
+    /// Returns the fully constructed `EventEnvelope`.
     pub fn build(self) -> EventEnvelope {
         let mut envelope = EventEnvelope::with_metadata(self.event, self.metadata);
         if let Some(priority) = self.priority {
@@ -293,7 +313,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -310,7 +331,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -390,15 +412,18 @@ mod tests {
     #[test]
     fn test_envelope_poison_pill() {
         // Create an envelope with a fallback type for the poison pill
-        let mut envelope = EventEnvelope::new(
-            crate::event::BroadcastEvent { message: "Poison Pill".to_string() }
-        );
-        
+        let mut envelope = EventEnvelope::new(crate::event::BroadcastEvent {
+            message: "Poison Pill".to_string(),
+        });
+
         // Override the payload bytes with the raw poison pill
         let broken_bytes = b"{\"broken\": \"json\"";
         envelope.payload_bytes = Some(broken_bytes.to_vec());
-        
+
         // We can access the payload bytes for the DLQ to inspect
-        assert_eq!(envelope.payload_bytes.as_deref(), Some(broken_bytes.as_slice()));
+        assert_eq!(
+            envelope.payload_bytes.as_deref(),
+            Some(broken_bytes.as_slice())
+        );
     }
 }

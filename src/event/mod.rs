@@ -180,7 +180,8 @@ mod tests {
         }
 
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -223,14 +224,20 @@ mod tests {
         }
 
         let event = ProtoUnit { id: 999 };
-        
+
         // 1. Verify it serializes correctly using prost
-        let bytes = event.serialize_event().expect("Failed to serialize via protobuf");
+        let bytes = event
+            .serialize_event()
+            .expect("Failed to serialize via protobuf");
         assert!(!bytes.is_empty());
 
         // 2. Verify it deserializes correctly
-        let reconstructed = ProtoUnit::deserialize_event(&bytes).expect("Failed to deserialize via protobuf");
+        let reconstructed =
+            ProtoUnit::deserialize_event(&bytes).expect("Failed to deserialize via protobuf");
         assert_eq!(reconstructed.id, 999);
-        assert_eq!(ProtoUnit::event_type(), "ProtoUnit");
+        assert_eq!(
+            ProtoUnit::event_type(),
+            concat!(module_path!(), "::ProtoUnit")
+        );
     }
 }

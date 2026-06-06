@@ -16,7 +16,7 @@ pub mod handle;
 pub mod handler;
 
 pub use handle::{SubscriptionBuilder, SubscriptionHandle};
-pub use handler::{EventHandler, FilteredHandler, FunctionHandler, TypedHandler};
+pub use handler::{EventFilterFn, EventHandler, FilteredHandler, FunctionHandler, TypedHandler};
 
 /// Internal subscription data
 struct SubscriptionData {
@@ -24,7 +24,11 @@ struct SubscriptionData {
     handle: JoinHandle<()>,
 }
 
-/// Manages all active subscriptions in the event bus.
+/// Manages all active subscriptions, routing, and handler lifecycle in the event bus.
+///
+/// The `SubscriptionManager` acts as the execution engine for event consumption. It maps
+/// incoming events to registered `EventHandler`s, spawns asynchronous tasks for processing,
+/// handles backpressure via MPSC channels, and manages the retry/DLQ mechanics for failures.
 #[allow(missing_debug_implementations)]
 pub struct SubscriptionManager {
     /// Registry for type-to-subscription mapping
@@ -53,7 +57,13 @@ pub struct SubscriptionManager {
 }
 
 impl SubscriptionManager {
-    /// Create a new subscription manager
+    /// Create a new subscription manager with default handler channel sizes.
+    ///
+    /// # Arguments
+    ///
+    /// * `registry` - The central registry tracking routing keys and types.
+    /// * `max_retries` - The default number of retries before an event is sent to DLQ.
+    /// * `retry_backoff` - The base exponential backoff duration between retries.
     pub fn new(
         registry: Arc<dyn EventRegistry>,
         max_retries: u32,
@@ -115,7 +125,10 @@ impl SubscriptionManager {
         self.event_receiver = Some(receiver);
     }
 
-    /// Shut down the subscription manager gracefully, waiting for all handlers to process buffered events
+    /// Shut down the subscription manager gracefully.
+    ///
+    /// This stops accepting new events, closes all handler channels, and waits for
+    /// the currently buffered events to finish processing across all active handler tasks.
     pub async fn shutdown_gracefully(&self) {
         let mut handles = Vec::new();
 
@@ -136,21 +149,36 @@ impl SubscriptionManager {
         }
     }
 
-    /// Subscribe a handler to events of type T
+    /// Subscribe a handler to events of a specific type `T`.
+    ///
+    /// # Arguments
+    ///
+    /// * `handler` - An implementation of the `EventHandler` trait.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SubscriptionHandle` managing this specific binding.
     pub async fn subscribe<T, H>(&self, handler: H) -> Result<SubscriptionHandle>
     where
         T: Event,
         H: EventHandler,
     {
-        self.subscribe_typed::<T, H>(handler, format!("Handler<{}>", T::event_type()))
+        self.subscribe_typed::<T, H>(handler, format!("Handler<{}>", T::event_type()), None)
             .await
     }
 
-    /// Subscribe a typed handler with a custom name
+    /// Subscribe a typed handler with a custom name and an optional routing topic.
+    ///
+    /// # Arguments
+    ///
+    /// * `handler` - The `EventHandler` trait implementation.
+    /// * `name` - The human-readable name of the handler for tracing.
+    /// * `topic` - An optional string specifying a wildcard or literal topic filter.
     pub async fn subscribe_typed<T, H>(
         &self,
         handler: H,
         name: impl Into<String>,
+        topic: Option<String>,
     ) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -158,6 +186,8 @@ impl SubscriptionManager {
     {
         let name = name.into();
         let (handle, mut shutdown_rx) = SubscriptionHandle::with_name(Uuid::new_v4(), &name);
+
+        let filter_fn = handler.filter();
 
         debug!(
             subscription_id = %handle.id(),
@@ -192,9 +222,9 @@ impl SubscriptionManager {
                                     );
                                     #[cfg(feature = "metrics")]
                                     let start_time = std::time::Instant::now();
-                                    
+
                                     let result = handler.handle(&envelope_clone).await;
-                                    
+
                                     #[cfg(feature = "metrics")]
                                     {
                                         let elapsed = start_time.elapsed().as_secs_f64();
@@ -209,18 +239,18 @@ impl SubscriptionManager {
                                                 subscription_id = %sub_id,
                                                 "Handler executed successfully"
                                             );
-                                            
+
                                             #[cfg(feature = "metrics")]
                                             metrics::counter!("tokio_events_dispatched_total", "type" => envelope_clone.event_type().to_string()).increment(1);
-                                            
+
                                             break;
                                         }
                                         Err(e) => {
                                             attempt += 1;
-                                            
+
                                             #[cfg(feature = "metrics")]
                                             metrics::counter!("tokio_events_handler_errors_total", "type" => envelope_clone.event_type().to_string()).increment(1);
-                                            
+
                                             if attempt > max_retries {
                                                 error!(
                                                     subscription_id = %sub_id,
@@ -228,19 +258,19 @@ impl SubscriptionManager {
                                                     "Handler permanently failed after {} attempts",
                                                     attempt
                                                 );
-                                                
+
                                                 // Send to DLQ if configured
                                                 if let Some(dlq) = &dlq_tx {
                                                     let _ = dlq.send(envelope_clone.clone()).await;
-                                                    
+
                                                     #[cfg(feature = "metrics")]
                                                     metrics::counter!("tokio_events_dlq_total", "type" => envelope_clone.event_type().to_string()).increment(1);
                                                 }
-                                                
+
                                                 // We must still ack the event so it gets removed from the dispatcher/persistence
                                                 // since we've now routed it to DLQ (or dropped it).
                                                 registry_clone.ack_event(sub_id, envelope_clone.event_id());
-                                                
+
                                                 break;
                                             }
 
@@ -275,7 +305,13 @@ impl SubscriptionManager {
         self.subscriptions.insert(handle.id(), subscription_data);
 
         // Then register in the registry so publishers can discover it
-        let entry = SubscriptionEntry::with_name(handle.id(), &name);
+        let mut entry = SubscriptionEntry::with_name(handle.id(), &name);
+        if let Some(t) = topic {
+            entry = entry.with_topic(t);
+        }
+        if let Some(f) = filter_fn {
+            entry = entry.with_filter(f);
+        }
         self.registry
             .register(T::type_id(), T::event_type(), entry)?;
 
@@ -354,11 +390,11 @@ impl SubscriptionManager {
                                                     "Handler permanently failed after {} attempts",
                                                     attempt
                                                 );
-                                                
+
                                                 if let Some(dlq) = &dlq_tx {
                                                     let _ = dlq.send(envelope_clone.clone()).await;
                                                 }
-                                                
+
                                                 // We must still ack the event so it gets removed from the dispatcher/persistence
                                                 // since we've now routed it to DLQ (or dropped it).
                                                 registry_clone.ack_event(sub_id, envelope_clone.event_id());
@@ -407,7 +443,15 @@ impl SubscriptionManager {
         Ok(handle)
     }
 
-    /// Subscribe a function as an event handler
+    /// Subscribe a raw asynchronous closure as an event handler.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - An asynchronous closure taking an event of type `T`.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SubscriptionHandle`.
     pub async fn subscribe_fn<T, F, Fut>(&self, f: F) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -418,7 +462,44 @@ impl SubscriptionManager {
         self.subscribe::<T, _>(handler).await
     }
 
-    /// Unsubscribe a handler
+    /// Subscribe a raw asynchronous closure to a specific topic.
+    ///
+    /// # Arguments
+    ///
+    /// * `topic` - The routing topic to bind this function to.
+    /// * `f` - An asynchronous closure taking an event of type `T`.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SubscriptionHandle`.
+    pub async fn subscribe_topic_fn<T, F, Fut>(
+        &self,
+        topic: &str,
+        f: F,
+    ) -> Result<SubscriptionHandle>
+    where
+        T: Event,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handler = FunctionHandler::new(f);
+        let name = format!("TopicHandler<{}>::{}", T::event_type(), topic);
+        self.subscribe_typed::<T, _>(handler, name, Some(topic.to_string()))
+            .await
+    }
+
+    /// Unsubscribe an active handler by its handle.
+    ///
+    /// This immediately stops the routing of new events to this subscription and
+    /// aborts the background worker task.
+    ///
+    /// # Arguments
+    ///
+    /// * `handle` - The `SubscriptionHandle` to remove.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription cannot be found.
     pub async fn unsubscribe(&self, handle: SubscriptionHandle) -> Result<()> {
         debug!(subscription_id = %handle.id(), "Unsubscribing handler");
 
@@ -437,7 +518,19 @@ impl SubscriptionManager {
         }
     }
 
-    /// Dispatch an event to all registered handlers
+    /// Dispatch an event envelope to all registered matching handlers.
+    ///
+    /// This method performs topic resolution, evaluates handler filters, and then
+    /// concurrently sends the event to the MPSC channels of all matching handlers.
+    /// Backpressure is applied automatically if a handler's channel buffer is full.
+    ///
+    /// # Arguments
+    ///
+    /// * `envelope` - The `EventEnvelope` containing the event payload and metadata.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if dispatch was successful.
     pub async fn dispatch(&self, envelope: Arc<EventEnvelope>) -> Result<()> {
         trace!(
             event_id = %envelope.event_id(),
@@ -447,15 +540,30 @@ impl SubscriptionManager {
 
         // Get all subscriptions for this event type
         let event_type = envelope.type_id();
-        let subscriptions = self.registry.get_subscriptions(event_type);
+        let mut subscriptions = self.registry.get_subscriptions(event_type);
 
-        if subscriptions.is_empty() {
-            println!("SM: No subscriptions found for event type: {}", envelope.event_type());
-            trace!("No subscriptions for event type");
-            return Ok(());
+        // Filter out subscriptions that have a specific topic filter.
+        // They will be added back via `get_topic_subscriptions` if they match.
+        subscriptions.retain(|s| s.topic.is_none());
+
+        // Get wildcard topic matches using explicit topic or implicit event_type name
+        let target_topic = envelope
+            .metadata
+            .topic
+            .as_deref()
+            .unwrap_or(envelope.event_type());
+        let topic_subs = self.registry.get_topic_subscriptions(target_topic);
+
+        for sub in topic_subs {
+            if !subscriptions.iter().any(|s| s.id == sub.id) {
+                subscriptions.push(sub);
+            }
         }
 
-        println!("SM: Found {} subscriptions for event {}", subscriptions.len(), envelope.event_type());
+        if subscriptions.is_empty() {
+            trace!("No subscriptions for event type or topic");
+            return Ok(());
+        }
 
         debug!(
             event_id = %envelope.event_id(),
@@ -467,6 +575,11 @@ impl SubscriptionManager {
         let senders: Vec<(Uuid, tokio::sync::mpsc::Sender<Arc<EventEnvelope>>)> = subscriptions
             .into_iter()
             .filter_map(|sub_entry| {
+                if let Some(filter) = &sub_entry.filter {
+                    if !filter(&envelope) {
+                        return None;
+                    }
+                }
                 self.subscriptions
                     .get(&sub_entry.id)
                     .map(|sub_data| (sub_entry.id, sub_data.sender.clone()))
@@ -477,7 +590,6 @@ impl SubscriptionManager {
         let mut sends = Vec::new();
 
         for (sub_id, sender) in senders {
-            println!("SM: dispatching to subscription {}", sub_id);
             let envelope_clone = envelope.clone();
             sends.push(async move {
                 if let Err(e) = sender.send(envelope_clone).await {
@@ -547,7 +659,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

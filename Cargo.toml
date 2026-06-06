@@ -1,6 +1,6 @@
 [package]
 name = "tokio-events"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 authors = ["Abhishek Khushal Harde <akharde1998@gmail.com>"]
 description = "A modern, type-safe async event bus for Rust applications"
@@ -9,10 +9,17 @@ license = "MIT OR Apache-2.0"
 keywords = ["async", "events", "event-bus", "tokio", "pubsub"]
 categories = ["asynchronous", "concurrency"]
 documentation = "https://docs.rs/tokio-events"
-
+exclude = [
+    "demo-api-gateway/**/*",
+    "demo-backend-worker/**/*",
+    "demo-shared/**/*"
+]
 [workspace]
 members = [
-    "tokio-events-macros"
+    "tokio-events-macros",
+    "demo-shared",
+    "demo-api-gateway",
+    "demo-backend-worker"
 ]
 
 [dependencies]
@@ -32,7 +39,7 @@ redb = { version = "4.1.0", optional = true }
 metrics = { version = "0.22", optional = true }
 async-nats = { version = "0.33", optional = true }
 prost = { version = "0.13", optional = true }
-tokio-events-macros = { path = "tokio-events-macros", version = "0.2.0", optional = true }
+tokio-events-macros = { path = "tokio-events-macros", version = "0.3.0", optional = true }
 
 [features]
 default = ["macros"]
@@ -44,6 +51,7 @@ protobuf = ["dep:prost"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio-stream = "0.1.18"
 
 [[example]]
 name = "03_persistent_queue"

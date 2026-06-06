@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 static GLOBAL_BUS: OnceLock<EventBus> = OnceLock::new();
 
 /// Sets the global event bus instance.
-/// 
+///
 /// This function can only be called once. Subsequent calls will return an error
 /// containing the `EventBus` that was passed in.
 #[allow(clippy::result_large_err)]
@@ -23,13 +23,15 @@ pub fn get_bus() -> Option<&'static EventBus> {
 }
 
 /// Publishes an event to the global event bus.
-/// 
+///
 /// Returns an error if the global event bus has not been initialized via `set_global_bus`.
 pub async fn publish<E: Event>(event: E) -> Result<uuid::Uuid> {
     if let Some(bus) = GLOBAL_BUS.get() {
         bus.publish(event).await
     } else {
-        Err(Error::internal("Global event bus not initialized. Call tokio_events::global::set_global_bus() first."))
+        Err(Error::internal(
+            "Global event bus not initialized. Call tokio_events::global::set_global_bus() first.",
+        ))
     }
 }
 
@@ -73,7 +75,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -81,16 +84,16 @@ mod tests {
     async fn test_global_bus() {
         // We can't safely test the OnceLock globally multiple times in standard cargo test
         // without test isolation issues, but we can verify it initializes and publishes.
-        
+
         // Setup bus
         let bus = EventBusBuilder::new().build().await.unwrap();
-        
+
         // This might fail if another test initialized it first, but we just want to ensure
         // the global bus is populated.
         let _ = set_global_bus(bus);
-        
+
         assert!(get_bus().is_some());
-        
+
         // Publish should succeed
         let res = publish(GlobalTestEvent { id: 42 }).await;
         assert!(res.is_ok());

@@ -31,10 +31,13 @@ async fn test_redb_crash_recovery() {
         let _sub1 = bus.subscribe(|_: CriticalEvent| async {}).await.unwrap();
 
         // Publish with 5 seconds delay so it definitely doesn't fire while we are reconnecting
-        bus.publish_delayed(CriticalEvent {
-            id: event_id,
-            data: "important data".to_string(),
-        }, std::time::Duration::from_secs(5))
+        bus.publish_delayed(
+            CriticalEvent {
+                id: event_id,
+                data: "important data".to_string(),
+            },
+            std::time::Duration::from_secs(5),
+        )
         .await
         .unwrap();
 
@@ -50,9 +53,11 @@ async fn test_redb_crash_recovery() {
 
     // PHASE 2: Restart the app. The background scheduler should automatically recover and fire the event!
     {
-        let mut config = tokio_events::bus::config::EventBusConfig::default();
-        config.scheduler_tick_rate = std::time::Duration::from_secs(1); // Tick every 1 second
-        
+        let config = tokio_events::bus::config::EventBusConfig {
+            scheduler_tick_rate: std::time::Duration::from_secs(1),
+            ..Default::default()
+        };
+
         let bus = EventBus::builder()
             .with_config(config)
             .with_redb_path(&db_path)
@@ -156,7 +161,7 @@ async fn test_redb_concurrent_workers() {
         .unwrap();
 
     let count_clone2 = processed_count.clone();
-    
+
     // Handler 2
     let _sub2 = bus
         .subscribe(move |_: CriticalEvent| {

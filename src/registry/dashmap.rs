@@ -1,10 +1,10 @@
 //! DashMap-based implementation of EventRegistry for concurrent access.
 
-use super::{EventRegistry, SubscriptionEntry};
+use super::{topic_trie::TopicTrie, EventRegistry, SubscriptionEntry};
 use crate::{Error, Result};
 use dashmap::DashMap;
 use std::any::TypeId;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 use uuid::Uuid;
 
@@ -22,6 +22,9 @@ pub struct DashMapRegistry {
 
     /// Map from event type_name to TypeId for persistence recovery
     name_to_type: Arc<DashMap<String, TypeId>>,
+
+    /// Trie for topic-based routing and wildcard matching
+    topic_trie: Arc<RwLock<TopicTrie>>,
 }
 
 impl DashMapRegistry {
@@ -31,6 +34,7 @@ impl DashMapRegistry {
             subscriptions: Arc::new(DashMap::new()),
             subscription_to_type: Arc::new(DashMap::new()),
             name_to_type: Arc::new(DashMap::new()),
+            topic_trie: Arc::new(RwLock::new(TopicTrie::new())),
         }
     }
 
@@ -40,6 +44,7 @@ impl DashMapRegistry {
             subscriptions: Arc::new(DashMap::with_capacity(capacity)),
             subscription_to_type: Arc::new(DashMap::with_capacity(capacity * 10)), // Assume ~10 subs per type
             name_to_type: Arc::new(DashMap::with_capacity(capacity)),
+            topic_trie: Arc::new(RwLock::new(TopicTrie::new())),
         }
     }
 }
@@ -76,11 +81,17 @@ impl EventRegistry for DashMapRegistry {
             .or_default()
             .push(subscription.clone());
 
+        // Add to topic trie
+        if let Some(topic) = &subscription.topic {
+            let mut trie = self.topic_trie.write().unwrap();
+            trie.insert(topic, subscription.id);
+        }
+
         debug!(
             subscription_id = %subscription.id,
             "Subscription registered successfully"
         );
-        
+
         #[cfg(feature = "metrics")]
         metrics::gauge!("tokio_events_subscriptions_active").increment(1.0);
 
@@ -110,11 +121,15 @@ impl EventRegistry for DashMapRegistry {
             }
         }
 
+        // Remove from topic trie
+        let mut trie = self.topic_trie.write().unwrap();
+        trie.remove(subscription_id);
+
         debug!(subscription_id = %subscription_id, "Subscription unregistered");
-        
+
         #[cfg(feature = "metrics")]
         metrics::gauge!("tokio_events_subscriptions_active").decrement(1.0);
-        
+
         Ok(())
     }
 
@@ -123,6 +138,28 @@ impl EventRegistry for DashMapRegistry {
             .get(&event_type)
             .map(|subs| subs.iter().filter(|s| s.active).cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Get all active subscriptions that match the specific literal topic
+    fn get_topic_subscriptions(&self, literal_topic: &str) -> Vec<SubscriptionEntry> {
+        let trie = self.topic_trie.read().unwrap();
+        let matching_ids = trie.match_topic(literal_topic);
+
+        if matching_ids.is_empty() {
+            return Vec::new();
+        }
+
+        // Gather the actual subscription entries by ID
+        let mut results = Vec::new();
+        for subs in self.subscriptions.iter() {
+            for sub in subs.value() {
+                if sub.active && matching_ids.contains(&sub.id) {
+                    results.push(sub.clone());
+                }
+            }
+        }
+
+        results
     }
 
     fn get_subscription(&self, subscription_id: Uuid) -> Option<SubscriptionEntry> {
@@ -194,6 +231,9 @@ impl EventRegistry for DashMapRegistry {
         self.subscriptions.clear();
         self.subscription_to_type.clear();
         self.name_to_type.clear();
+
+        let mut trie = self.topic_trie.write().unwrap();
+        *trie = TopicTrie::new();
     }
 
     fn get_type_id(&self, type_name: &str) -> Option<TypeId> {
@@ -217,7 +257,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 
@@ -232,7 +273,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

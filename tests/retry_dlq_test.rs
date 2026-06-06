@@ -28,25 +28,26 @@ async fn test_handler_retries_and_succeeds() {
     let attempts_clone = attempts.clone();
 
     // Subscribe a handler that fails twice, then succeeds on the 3rd try
-    let _handle = bus.subscribe_fallible(move |event: FlakyEvent| {
-        let attempts = attempts_clone.clone();
-        async move {
-            let current_attempt = attempts.fetch_add(1, Ordering::Relaxed) + 1;
-            
-            if current_attempt <= 2 {
-                return Err(tokio_events::Error::internal(format!(
-                    "Failing intentionally on attempt {}",
-                    current_attempt
-                )));
-            }
+    let _handle = bus
+        .subscribe_fallible(move |event: FlakyEvent| {
+            let attempts = attempts_clone.clone();
+            async move {
+                let current_attempt = attempts.fetch_add(1, Ordering::Relaxed) + 1;
 
-            // Succeed on 3rd try
-            assert_eq!(event.id, 42);
-            Ok(())
-        }
-    })
-    .await
-    .unwrap();
+                if current_attempt <= 2 {
+                    return Err(tokio_events::Error::internal(format!(
+                        "Failing intentionally on attempt {}",
+                        current_attempt
+                    )));
+                }
+
+                // Succeed on 3rd try
+                assert_eq!(event.id, 42);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
 
     // Publish the event
     bus.publish(FlakyEvent { id: 42 }).await.unwrap();
@@ -74,21 +75,28 @@ async fn test_handler_fails_and_routes_to_dlq() {
         .await
         .unwrap();
 
-    let mut dlq_rx = bus.take_dlq_receiver().await.expect("Should have DLQ receiver");
+    let mut dlq_rx = bus
+        .take_dlq_receiver()
+        .await
+        .expect("Should have DLQ receiver");
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let attempts_clone = attempts.clone();
 
     // Subscribe a handler that ALWAYS fails
-    let _handle = bus.subscribe_fallible(move |event: PoisonEvent| {
-        let attempts = attempts_clone.clone();
-        async move {
-            attempts.fetch_add(1, Ordering::Relaxed);
-            Err(tokio_events::Error::internal(format!("Poisoned event {}", event.id)))
-        }
-    })
-    .await
-    .unwrap();
+    let _handle = bus
+        .subscribe_fallible(move |event: PoisonEvent| {
+            let attempts = attempts_clone.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::Relaxed);
+                Err(tokio_events::Error::internal(format!(
+                    "Poisoned event {}",
+                    event.id
+                )))
+            }
+        })
+        .await
+        .unwrap();
 
     // Publish the event
     let event_id = bus.publish(PoisonEvent { id: 99 }).await.unwrap();
@@ -100,7 +108,7 @@ async fn test_handler_fails_and_routes_to_dlq() {
         .expect("DLQ channel closed");
 
     // Max retries is 2, so it should try initial + 2 retries = 3 attempts total.
-    // Wait, the logic in SubscriptionManager says `attempt > max_retries`. 
+    // Wait, the logic in SubscriptionManager says `attempt > max_retries`.
     // If max_retries is 2:
     // attempt 1 fails -> attempt = 1, backoff, retry
     // attempt 2 fails -> attempt = 2, backoff, retry
@@ -110,8 +118,11 @@ async fn test_handler_fails_and_routes_to_dlq() {
 
     // Verify the envelope in DLQ is exactly the one we published
     assert_eq!(dlq_envelope.event_id(), event_id);
-    assert_eq!(dlq_envelope.event_type(), "PoisonEvent");
-    
+    assert_eq!(
+        dlq_envelope.event_type(),
+        concat!(module_path!(), "::PoisonEvent")
+    );
+
     // Verify we can extract the original event data
     let original_event = dlq_envelope.get_event::<PoisonEvent>().unwrap();
     assert_eq!(original_event.id, 99);
@@ -120,7 +131,10 @@ async fn test_handler_fails_and_routes_to_dlq() {
 #[tokio::test]
 async fn test_partial_handler_failure() {
     let bus = tokio_events::bus::builder::EventBusBuilder::new()
-        .configure(|c| c.max_retries(2).retry_backoff(std::time::Duration::from_millis(5)))
+        .configure(|c| {
+            c.max_retries(2)
+                .retry_backoff(std::time::Duration::from_millis(5))
+        })
         .build()
         .await
         .unwrap();
@@ -153,18 +167,14 @@ async fn test_partial_handler_failure() {
         .await
         .unwrap();
 
-    bus.publish(PoisonEvent {
-        id: 42,
-    })
-    .await
-    .unwrap();
+    bus.publish(PoisonEvent { id: 42 }).await.unwrap();
 
     // Wait for DLQ message from the failed handler
     let _dlq_msg = dlq_rx.recv().await.expect("Expected DLQ message");
-    
+
     // The successful handler should have only processed it ONCE
     assert_eq!(success_count.load(Ordering::Relaxed), 1);
-    
+
     // The failed handler should have processed it exactly 1 (initial) + 2 (retries) = 3 times
     assert_eq!(fail_count.load(Ordering::Relaxed), 3);
 }

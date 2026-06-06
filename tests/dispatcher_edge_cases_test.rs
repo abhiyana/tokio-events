@@ -16,14 +16,16 @@ async fn test_publish_after_graceful_shutdown() {
     // If it takes `self`, the compiler guarantees we can't publish after shutdown! That's brilliant.
     // So this test is actually unneeded because Rust's borrow checker proves it.
     // I'll just keep a dummy test.
-    assert!(true);
+    // Just ensuring compiling is fine
 }
 
 #[tokio::test]
 async fn test_abrupt_shutdown_timeout() {
-    let mut config = tokio_events::bus::config::EventBusConfig::default();
-    config.shutdown_timeout = std::time::Duration::from_millis(50);
-    
+    let config = tokio_events::bus::config::EventBusConfig {
+        shutdown_timeout: std::time::Duration::from_millis(50),
+        ..Default::default()
+    };
+
     let bus = tokio_events::bus::builder::EventBusBuilder::new()
         .with_config(config)
         .build()
@@ -81,7 +83,7 @@ async fn test_queue_overflow_drop() {
     // The rest will be dropped because drop_on_full = true.
     for i in 0..30 {
         let res = bus.publish(TestEvent { id: i }).await;
-        assert!(res.is_ok()); 
+        assert!(res.is_ok());
     }
 
     let stats = bus.stats();
@@ -121,7 +123,7 @@ async fn test_queue_overflow_backpressure() {
         .unwrap();
 
     let start = std::time::Instant::now();
-    
+
     // This will block once 12 events are buffered (10 handler + 2 dispatcher)
     for i in 0..20 {
         bus.publish(TestEvent { id: i }).await.unwrap();

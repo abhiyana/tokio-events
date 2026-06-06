@@ -36,13 +36,19 @@ pub struct EventMetadata {
 
     /// Optional scheduled delivery timestamp. If set, the event will not be delivered until this time.
     pub deliver_at: Option<DateTime<Utc>>,
+
+    /// Optional explicit topic/subject for routing (defaults to TypeName if not set)
+    pub topic: Option<String>,
+
+    /// Optional reply-to topic for Request-Reply (RPC) correlation
+    pub reply_to: Option<String>,
 }
 
 impl EventMetadata {
     /// Create new metadata with generated event ID and current timestamp
     pub fn new() -> Self {
         Self {
-            event_id: Uuid::max(),
+            event_id: Uuid::new_v4(),
             timestamp: Utc::now(),
             correlation_id: None,
             causation_id: None,
@@ -51,6 +57,8 @@ impl EventMetadata {
             session_id: None,
             custom: HashMap::new(),
             deliver_at: None,
+            topic: None,
+            reply_to: None,
         }
     }
 
@@ -97,13 +105,39 @@ impl EventMetadata {
         self
     }
 
-    /// Schedule this event to be delivered at an exact future time
+    /// Set a custom topic for Subject-Based routing
+    pub fn with_topic(mut self, topic: impl Into<String>) -> Self {
+        self.topic = Some(topic.into());
+        self
+    }
+
+    /// Set a reply-to topic for Request-Reply (RPC) pattern
+    pub fn with_reply_to(mut self, reply_to: impl Into<String>) -> Self {
+        self.reply_to = Some(reply_to.into());
+        self
+    }
+
+    /// Schedule this event to be delivered at an exact future time.
+    ///
+    /// Requires the event bus to be configured with the `persistence` feature and an
+    /// active `RedbDispatcher` to survive process restarts.
+    ///
+    /// # Arguments
+    ///
+    /// * `time` - The exact UTC `DateTime` to dispatch the event.
     pub fn schedule_at(mut self, time: DateTime<Utc>) -> Self {
         self.deliver_at = Some(time);
         self
     }
 
-    /// Delay this event from being delivered for a specific duration
+    /// Delay this event from being delivered for a specific duration.
+    ///
+    /// Requires the event bus to be configured with the `persistence` feature to
+    /// survive process restarts.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - The `Duration` to wait before dispatching the event.
     pub fn delay(mut self, duration: std::time::Duration) -> Self {
         self.deliver_at = Some(Utc::now() + duration);
         self
@@ -114,7 +148,14 @@ impl EventMetadata {
         self.custom.get(key)
     }
 
-    /// Create a chain of events by setting causation from another metadata
+    /// Create a chain of events by linking causation to another event's metadata.
+    ///
+    /// This automatically sets the `causation_id` of this event to the `event_id` of the parent,
+    /// and inherits the `correlation_id`, `user_id`, and `session_id` to maintain distributed trace context.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent` - The `EventMetadata` of the preceding event in the workflow.
     pub fn chain_from(&mut self, parent: &EventMetadata) {
         self.causation_id = Some(parent.event_id);
         self.correlation_id = parent.correlation_id.or(Some(parent.event_id));
@@ -188,6 +229,18 @@ impl MetadataBuilder {
     /// Add custom metadata
     pub fn custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.custom.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set a custom topic for Subject-Based routing
+    pub fn topic(mut self, topic: impl Into<String>) -> Self {
+        self.metadata.topic = Some(topic.into());
+        self
+    }
+
+    /// Set a reply-to topic for Request-Reply (RPC) pattern
+    pub fn reply_to(mut self, reply_to: impl Into<String>) -> Self {
+        self.metadata.reply_to = Some(reply_to.into());
         self
     }
 

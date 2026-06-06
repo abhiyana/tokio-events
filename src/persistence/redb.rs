@@ -32,7 +32,8 @@ pub struct PersistedEnvelope {
 const EVENTS_TABLE: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("events");
 const REFCOUNT_TABLE: TableDefinition<'_, u128, u32> = TableDefinition::new("refcount");
 /// Scheduled events. Key is (timestamp_ms, event_id). This allows automatic chronological sorting.
-const SCHEDULED_EVENTS_TABLE: TableDefinition<'_, (u64, u128), &[u8]> = TableDefinition::new("scheduled_events");
+const SCHEDULED_EVENTS_TABLE: TableDefinition<'_, (u64, u128), &[u8]> =
+    TableDefinition::new("scheduled_events");
 
 /// A registry that wraps an in-memory registry and intercepts acks to update redb
 #[derive(Debug)]
@@ -46,7 +47,7 @@ impl RedbRegistry {
     pub fn new(db: Arc<Database>, inner: Arc<DashMapRegistry>) -> Self {
         let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<Uuid>();
         let db_clone = db.clone();
-        
+
         // Background worker to process DB acks without blocking the Tokio reactor
         tokio::spawn(async move {
             while let Some(event_id) = ack_rx.recv().await {
@@ -99,7 +100,7 @@ impl RedbRegistry {
 
                     let _ = write_txn.commit();
                 }).await;
-                
+
                 if let Err(e) = res {
                     error!("Ack task panicked: {}", e);
                 }
@@ -248,7 +249,14 @@ impl RedbDispatcher {
 
             // Check how many subscribers need this event
             let type_id = event.type_id();
-            let sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
+            let mut sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
+
+            if let Some(topic) = &event.metadata.topic {
+                let topic_sub_count = subscription_manager
+                    .registry()
+                    .topic_subscription_count(topic) as u32;
+                sub_count += topic_sub_count; // Rough estimate to ensure sub_count > 0
+            }
 
             if sub_count > 0 {
                 // Construct PersistedEnvelope
@@ -265,8 +273,16 @@ impl RedbDispatcher {
                         .map_err(|e| crate::Error::SerializationError(e.to_string()))
                 }) {
                     Ok(bytes) => {
-                        let is_scheduled = event.metadata.deliver_at.map(|d| d > chrono::Utc::now()).unwrap_or(false);
-                        let deliver_at_ms = event.metadata.deliver_at.map(|d| d.timestamp_millis() as u64).unwrap_or(0);
+                        let is_scheduled = event
+                            .metadata
+                            .deliver_at
+                            .map(|d| d > chrono::Utc::now())
+                            .unwrap_or(false);
+                        let deliver_at_ms = event
+                            .metadata
+                            .deliver_at
+                            .map(|d| d.timestamp_millis() as u64)
+                            .unwrap_or(0);
 
                         let write_txn_res = tokio::task::spawn_blocking({
                             let db = db.clone();
@@ -278,7 +294,10 @@ impl RedbDispatcher {
                                             .open_table(SCHEDULED_EVENTS_TABLE)
                                             .map_err(|e| e.to_string())?;
                                         scheduled_events
-                                            .insert((deliver_at_ms, event_id_u128), bytes.as_slice())
+                                            .insert(
+                                                (deliver_at_ms, event_id_u128),
+                                                bytes.as_slice(),
+                                            )
                                             .map_err(|e| e.to_string())?;
                                     } else {
                                         let mut events = write_txn
@@ -305,12 +324,12 @@ impl RedbDispatcher {
                             dispatch_errors.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                        
+
                         // If wait_for_persistence is enabled, signal the publisher that the disk write is complete!
                         if let Some(tx) = ack_tx {
                             let _ = tx.send(());
                         }
-                        
+
                         #[cfg(feature = "metrics")]
                         metrics::counter!("tokio_events_persistence_writes_total", "type" => event.event_type().to_string()).increment(1);
 
@@ -367,8 +386,11 @@ impl RedbDispatcher {
         sender: mpsc::Sender<RedbDispatcherMessage>,
         registry: Arc<dyn EventRegistry>,
     ) {
-        info!("Redb scheduled events poller started (tick rate: {:?})", tick_rate);
-        
+        info!(
+            "Redb scheduled events poller started (tick rate: {:?})",
+            tick_rate
+        );
+
         while is_running.load(Ordering::SeqCst) {
             tokio::time::sleep(tick_rate).await;
             if !is_running.load(Ordering::SeqCst) {
@@ -377,26 +399,29 @@ impl RedbDispatcher {
 
             let now_ms = chrono::Utc::now().timestamp_millis() as u64;
             let db_clone = db.clone();
-            
-            let pull_res = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<PersistedEnvelope>, String> {
-                let mut ready_events = Vec::new();
-                
-                let write_txn = db_clone.begin_write().map_err(|e| e.to_string())?;
-                {
-                    let mut scheduled_table = match write_txn.open_table(SCHEDULED_EVENTS_TABLE) {
-                        Ok(t) => t,
-                        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(ready_events),
-                        Err(e) => return Err(e.to_string()),
-                    };
 
-                    let mut to_remove = Vec::new();
-                    
-                    if let Ok(iter) = scheduled_table.iter() {
-                        for entry_res in iter {
-                            if let Ok((key, val)) = entry_res {
+            let pull_res = tokio::task::spawn_blocking(
+                move || -> std::result::Result<Vec<PersistedEnvelope>, String> {
+                    let mut ready_events = Vec::new();
+
+                    let write_txn = db_clone.begin_write().map_err(|e| e.to_string())?;
+                    {
+                        let mut scheduled_table = match write_txn.open_table(SCHEDULED_EVENTS_TABLE)
+                        {
+                            Ok(t) => t,
+                            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(ready_events),
+                            Err(e) => return Err(e.to_string()),
+                        };
+
+                        let mut to_remove = Vec::new();
+
+                        if let Ok(iter) = scheduled_table.iter() {
+                            for (key, val) in iter.flatten() {
                                 let (ts, id) = key.value();
                                 if ts <= now_ms {
-                                    if let Ok(persisted) = serde_json::from_slice::<PersistedEnvelope>(val.value()) {
+                                    if let Ok(persisted) =
+                                        serde_json::from_slice::<PersistedEnvelope>(val.value())
+                                    {
                                         ready_events.push(persisted);
                                     }
                                     to_remove.push((ts, id));
@@ -407,16 +432,17 @@ impl RedbDispatcher {
                                 }
                             }
                         }
+
+                        for key in to_remove {
+                            let _ = scheduled_table.remove(key);
+                        }
                     }
 
-                    for key in to_remove {
-                        let _ = scheduled_table.remove(key);
-                    }
-                }
-                
-                write_txn.commit().map_err(|e| e.to_string())?;
-                Ok(ready_events)
-            }).await;
+                    write_txn.commit().map_err(|e| e.to_string())?;
+                    Ok(ready_events)
+                },
+            )
+            .await;
 
             match pull_res {
                 Ok(Ok(events)) => {
@@ -425,7 +451,7 @@ impl RedbDispatcher {
                             if registry.subscription_count(type_id) > 0 {
                                 // Strip the deliver_at so it doesn't get re-scheduled when sent to process_events
                                 persisted.metadata.deliver_at = None;
-                                
+
                                 let envelope = EventEnvelope::from_serialized(
                                     type_id,
                                     persisted.type_name,
@@ -433,8 +459,11 @@ impl RedbDispatcher {
                                     persisted.priority,
                                     persisted.payload,
                                 );
-                                
-                                let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: None };
+
+                                let msg = RedbDispatcherMessage {
+                                    envelope: Arc::new(envelope),
+                                    ack_tx: None,
+                                };
                                 let _ = sender.send(msg).await;
                             }
                         }
@@ -444,7 +473,7 @@ impl RedbDispatcher {
                 Err(e) => error!("Scheduler task panic: {}", e),
             }
         }
-        
+
         info!("Redb scheduled events poller stopped");
     }
 }
@@ -502,7 +531,7 @@ impl EventDispatcher for RedbDispatcher {
         if let Some(handle) = self.worker_handle.take() {
             let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await;
         }
-        
+
         if let Some(handle) = self.scheduler_handle.take() {
             let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await;
         }
@@ -524,7 +553,9 @@ impl EventDispatcher for RedbDispatcher {
         self.sender.take(); // Close channel so recv() returns None
 
         if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.await.map_err(|e| Error::internal(format!("Worker panicked: {}", e)));
+            let _ = handle
+                .await
+                .map_err(|e| Error::internal(format!("Worker panicked: {}", e)));
         }
 
         self.is_running.store(false, Ordering::SeqCst);
@@ -537,40 +568,63 @@ impl EventDispatcher for RedbDispatcher {
             return Err(Error::internal("Dispatcher is not running"));
         }
 
-        let sender = self.sender.as_ref().ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
         let current_size = sender.max_capacity().saturating_sub(sender.capacity());
         let max_size = self.max_queue_size.load(Ordering::Relaxed);
         if current_size as u64 > max_size {
-            self.max_queue_size.store(current_size as u64, Ordering::Relaxed);
+            self.max_queue_size
+                .store(current_size as u64, Ordering::Relaxed);
         }
 
         if self.wait_for_persistence {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: Some(tx) };
-            
+            let msg = RedbDispatcherMessage {
+                envelope: Arc::new(envelope),
+                ack_tx: Some(tx),
+            };
+
             if self.config.drop_on_full {
-                sender.try_send(msg).map_err(|_| Error::internal("Channel full"))?;
+                sender
+                    .try_send(msg)
+                    .map_err(|_| Error::internal("Channel full"))?;
             } else {
-                sender.send(msg).await.map_err(|_| Error::internal("Channel closed"))?;
+                sender
+                    .send(msg)
+                    .await
+                    .map_err(|_| Error::internal("Channel closed"))?;
             }
-            
+
             // Wait for physical disk confirmation!
             let _ = rx.await;
             Ok(())
         } else {
-            let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: None };
-            
+            let msg = RedbDispatcherMessage {
+                envelope: Arc::new(envelope),
+                ack_tx: None,
+            };
+
             if self.config.drop_on_full {
-                sender.try_send(msg).map_err(|_| Error::internal("Channel full"))
+                sender
+                    .try_send(msg)
+                    .map_err(|_| Error::internal("Channel full"))
             } else {
-                sender.send(msg).await.map_err(|_| Error::internal("Channel closed"))
+                sender
+                    .send(msg)
+                    .await
+                    .map_err(|_| Error::internal("Channel closed"))
             }
         }
     }
 
     async fn replay_pending(&self) -> Result<()> {
         let db = self.db.clone();
-        let sender = self.sender.clone().ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
+        let sender = self
+            .sender
+            .clone()
+            .ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
         let registry = self.subscription_manager.registry();
 
         let replay_res =
@@ -607,7 +661,7 @@ impl EventDispatcher for RedbDispatcher {
                                 if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
                                     if registry.subscription_count(type_id) > 0 {
                                         has_subscribers = true;
-                                        
+
                                         // Reconstruct the EventEnvelope
                                         let envelope = EventEnvelope::from_serialized(
                                             type_id,
@@ -618,13 +672,16 @@ impl EventDispatcher for RedbDispatcher {
                                         );
 
                                         // Inject it directly into the memory channel
-                                        let msg = RedbDispatcherMessage { envelope: Arc::new(envelope), ack_tx: None };
+                                        let msg = RedbDispatcherMessage {
+                                            envelope: Arc::new(envelope),
+                                            ack_tx: None,
+                                        };
                                         if sender.blocking_send(msg).is_ok() {
                                             count += 1;
                                         }
                                     }
                                 }
-                                
+
                                 // ZERO SUBSCRIBER FIX: If no handlers are listening, this event is dead
                                 if !has_subscribers {
                                     dead_events.push(event_id_u128);
@@ -639,7 +696,7 @@ impl EventDispatcher for RedbDispatcher {
                         }
                     }
                 }
-                
+
                 // Drop read transaction before opening write transaction
                 drop(events);
                 drop(refcounts);
@@ -687,7 +744,11 @@ impl EventDispatcher for RedbDispatcher {
         let events = self.events_dispatched.load(Ordering::Relaxed);
         let time = self.total_dispatch_time_us.load(Ordering::Relaxed);
         let avg_time = time.checked_div(events).unwrap_or(0);
-        let current_queue = self.sender.as_ref().map(|s| s.max_capacity() - s.capacity()).unwrap_or(0);
+        let current_queue = self
+            .sender
+            .as_ref()
+            .map(|s| s.max_capacity() - s.capacity())
+            .unwrap_or(0);
 
         DispatcherStats {
             events_dispatched: events,
@@ -707,7 +768,7 @@ mod tests {
     fn create_test_db() -> Arc<Database> {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.redb");
-        
+
         let db = Database::create(path).unwrap();
         let write_txn = db.begin_write().unwrap();
         {
@@ -715,22 +776,24 @@ mod tests {
             let _ = write_txn.open_table(REFCOUNT_TABLE).unwrap();
         }
         write_txn.commit().unwrap();
-        
+
         Arc::new(db)
     }
 
     #[tokio::test]
     async fn test_redb_corrupted_data_recovery() {
         let db = create_test_db();
-        
+
         // Inject purely malformed data directly into the redb tables
         let id1_val = Uuid::new_v4().as_u128();
         let write_txn = db.begin_write().unwrap();
         {
             let mut events = write_txn.open_table(EVENTS_TABLE).unwrap();
             let mut refcounts = write_txn.open_table(REFCOUNT_TABLE).unwrap();
-            
-            events.insert(id1_val, b"{{this is definitely not valid json".as_slice()).unwrap();
+
+            events
+                .insert(id1_val, b"{{this is definitely not valid json".as_slice())
+                .unwrap();
             refcounts.insert(id1_val, 1).unwrap();
         }
         write_txn.commit().unwrap();
@@ -738,11 +801,21 @@ mod tests {
         // The internal RedbDispatcher should load, encounter the corrupted JSON, log an error,
         // add the event to dead_events, and silently DELETE it during the load sequence!
         let registry: Arc<dyn EventRegistry> = Arc::new(DashMapRegistry::new());
-        let manager = Arc::new(crate::subscription::SubscriptionManager::new(registry, 3, std::time::Duration::from_millis(10)));
-        let dispatcher = RedbDispatcher::new(db.clone(), DispatcherConfig::default(), false, std::time::Duration::from_secs(1), manager);
-        
+        let manager = Arc::new(crate::subscription::SubscriptionManager::new(
+            registry,
+            3,
+            std::time::Duration::from_millis(10),
+        ));
+        let dispatcher = RedbDispatcher::new(
+            db.clone(),
+            DispatcherConfig::default(),
+            false,
+            std::time::Duration::from_secs(1),
+            manager,
+        );
+
         dispatcher.replay_pending().await.unwrap();
-        
+
         // Wait a tiny bit for the spawn_blocking to finish
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -757,7 +830,7 @@ mod tests {
         let db = create_test_db();
         let inner = Arc::new(DashMapRegistry::new());
         let registry = RedbRegistry::new(db.clone(), inner);
-        
+
         // Manually inject an event refcount of 2
         let id1 = Uuid::new_v4();
         let write_txn = db.begin_write().unwrap();
@@ -772,13 +845,13 @@ mod tests {
         // Ack once (should drop refcount to 1, but not delete event)
         registry.ack_tx.send(id1).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // give background task time to run
-        
+
         let read_txn = db.begin_read().unwrap();
         {
             let refcounts = read_txn.open_table(REFCOUNT_TABLE).unwrap();
             let count = refcounts.get(id1.as_u128()).unwrap().unwrap().value();
             assert_eq!(count, 1);
-            
+
             let events = read_txn.open_table(EVENTS_TABLE).unwrap();
             assert!(events.get(id1.as_u128()).unwrap().is_some());
         }
@@ -787,12 +860,12 @@ mod tests {
         // Ack twice (should drop refcount to 0, and DELETE event)
         registry.ack_tx.send(id1).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         let read_txn = db.begin_read().unwrap();
         {
             let refcounts = read_txn.open_table(REFCOUNT_TABLE).unwrap();
             assert!(refcounts.get(id1.as_u128()).unwrap().is_none());
-            
+
             let events = read_txn.open_table(EVENTS_TABLE).unwrap();
             assert!(events.get(id1.as_u128()).unwrap().is_none());
         }

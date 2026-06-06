@@ -106,7 +106,7 @@ pub mod prelude {
     pub use crate::bus::{EventBus, EventBusBuilder};
     pub use crate::error::{Error, Result};
     pub use crate::event::{Event, EventPriority, HasPriority};
-    
+
     #[cfg(feature = "remote")]
     pub use crate::event::Remote;
 

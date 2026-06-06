@@ -1,0 +1,15 @@
+[package]
+name = "demo-backend-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio-events = { path = "..", features = ["macros", "remote", "persistence"] }
+demo-shared = { path = "../demo-shared" }
+tokio = { version = "1.46", features = ["full"] }
+rand = "0.8"
+chrono = "0.4"
+tracing = { version = "0.1", features = ["std"] }
+tracing-subscriber = "0.3"
+uuid = "1.6"
+redb = "4.1.0"

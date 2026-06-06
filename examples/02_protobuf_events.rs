@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
         .await?;
 
     println!("Publishing UserUpdated protobuf event...");
-    
+
     // The EventBus natively handles the Protobuf serialization behind the scenes
     bus.publish(UserUpdated {
         id: 42,

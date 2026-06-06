@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
         .await?;
 
     println!("Publishing UserCreated event...");
-    
+
     // 3. Publish the event
     bus.publish(UserCreated {
         id: 42,
@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
 
     // Give the async handler a tiny bit of time to print before exiting
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+
     // Gracefully shut down the bus
     bus.shutdown_gracefully().await?;
     println!("Shutdown complete.");

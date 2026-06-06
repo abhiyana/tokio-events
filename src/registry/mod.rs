@@ -7,11 +7,15 @@ use crate::Result;
 use std::{any::TypeId, fmt::Debug};
 use uuid::Uuid;
 
-mod dashmap;
+pub mod dashmap;
+pub(crate) mod topic_trie;
+
 pub use dashmap::DashMapRegistry;
 
+use crate::subscription::EventFilterFn;
+
 /// A subscription entry in the registry
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SubscriptionEntry {
     /// Unique ID for this subscription
     pub id: Uuid,
@@ -27,6 +31,26 @@ pub struct SubscriptionEntry {
 
     /// Optional durable name for persistent queues
     pub durable_name: Option<String>,
+
+    /// Optional topic/subject for wildcard routing
+    pub topic: Option<String>,
+
+    /// Optional filter
+    pub filter: Option<EventFilterFn>,
+}
+
+impl Debug for SubscriptionEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscriptionEntry")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("active", &self.active)
+            .field("events_processed", &self.events_processed)
+            .field("durable_name", &self.durable_name)
+            .field("topic", &self.topic)
+            .field("filter", &self.filter.is_some())
+            .finish()
+    }
 }
 
 impl SubscriptionEntry {
@@ -38,6 +62,8 @@ impl SubscriptionEntry {
             active: true,
             events_processed: 0,
             durable_name: None,
+            topic: None,
+            filter: None,
         }
     }
 
@@ -49,12 +75,29 @@ impl SubscriptionEntry {
             active: true,
             events_processed: 0,
             durable_name: None,
+            topic: None,
+            filter: None,
         }
     }
 
     /// Set a durable name for persistent queues
     pub fn with_durable_name(mut self, name: impl Into<String>) -> Self {
         self.durable_name = Some(name.into());
+        self
+    }
+
+    /// Set a topic pattern for routing
+    pub fn with_topic(mut self, topic: impl Into<String>) -> Self {
+        self.topic = Some(topic.into());
+        self
+    }
+
+    /// Set a filter for evaluating events before queuing
+    pub fn with_filter(
+        mut self,
+        filter: EventFilterFn,
+    ) -> Self {
+        self.filter = Some(filter);
         self
     }
 }
@@ -78,6 +121,12 @@ pub trait EventRegistry: Send + Sync + Debug {
     /// Get all active subscriptions for a specific event type
     fn get_subscriptions(&self, event_type: TypeId) -> Vec<SubscriptionEntry>;
 
+    /// Get all active subscriptions matching a literal topic
+    fn get_topic_subscriptions(&self, literal_topic: &str) -> Vec<SubscriptionEntry> {
+        let _ = literal_topic;
+        Vec::new() // Default impl for backwards compatibility
+    }
+
     /// Get a specific subscription by ID
     fn get_subscription(&self, subscription_id: Uuid) -> Option<SubscriptionEntry>;
 
@@ -92,6 +141,11 @@ pub trait EventRegistry: Send + Sync + Debug {
 
     /// Get number of subscriptions for a specific event type
     fn subscription_count(&self, event_type: TypeId) -> usize;
+
+    /// Get number of subscriptions matching a literal topic
+    fn topic_subscription_count(&self, literal_topic: &str) -> usize {
+        self.get_topic_subscriptions(literal_topic).len()
+    }
 
     /// Get all registered event types
     fn event_types(&self) -> Vec<TypeId>;

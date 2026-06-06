@@ -26,17 +26,20 @@ async fn main() -> Result<()> {
     // 3. Subscribe to the event.
     let _handle = bus
         .subscribe(|event: OrderConfirmed| async move {
-            println!("[Subscriber] Processing Order #{}: {} cents", event.order_id, event.total_cents);
-            
+            println!(
+                "[Subscriber] Processing Order #{}: {} cents",
+                event.order_id, event.total_cents
+            );
+
             // Simulating a slow database update...
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            
+
             println!("[Subscriber] Done! The event will now be deleted from disk.");
         })
         .await?;
 
     // 4. Publish an event.
-    // The EventBus writes the serialized event to `events.redb` FIRST, before any subscribers receive it. 
+    // The EventBus writes the serialized event to `events.redb` FIRST, before any subscribers receive it.
     // If the server crashes right here, the event is safely stored in redb. When the server boots back up,
     // the EventBus will read it from disk and automatically replay it!
     println!("[Publisher] Emitting OrderConfirmed event to disk and subscribers...");

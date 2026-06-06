@@ -1,6 +1,6 @@
 [package]
 name = "tokio-events-macros"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Abhishek Khushal Harde <akharde1998@gmail.com>"]
 description = "Procedural macros for tokio-events"

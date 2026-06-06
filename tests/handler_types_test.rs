@@ -14,7 +14,10 @@ struct CustomStructHandler {
 #[async_trait::async_trait]
 impl tokio_events::EventHandler for CustomStructHandler {
     async fn handle(&self, envelope: &tokio_events::EventEnvelope) -> tokio_events::Result<()> {
-        println!("CustomStructHandler handle called for event_id: {}", envelope.event_id());
+        println!(
+            "CustomStructHandler handle called for event_id: {}",
+            envelope.event_id()
+        );
         match envelope.get_event::<BasicEvent>() {
             Ok(event) => {
                 self.counter.fetch_add(event.value, Ordering::Relaxed);
@@ -36,7 +39,8 @@ async fn test_custom_struct_handler() {
         counter: counter.clone(),
     };
 
-    let _handle = bus.subscribe_handler::<BasicEvent, _>(handler)
+    let _handle = bus
+        .subscribe_handler::<BasicEvent, _>(handler)
         .await
         .unwrap();
 
@@ -68,7 +72,7 @@ async fn test_unsubscribe_behavior() {
         .unwrap();
 
     bus.publish(BasicEvent { value: 10 }).await.unwrap();
-    
+
     // Give it time to process
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     assert_eq!(counter.load(Ordering::Relaxed), 10);

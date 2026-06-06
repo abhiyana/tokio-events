@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use tokio_events::Event;
-use serde::{Serialize, Deserialize};
 
 #[derive(Event, Serialize, Deserialize, Debug, Clone)]
 struct SimpleEvent {
@@ -14,7 +14,10 @@ struct CustomEvent {
 
 #[test]
 fn test_macro_default_event_type() {
-    assert_eq!(SimpleEvent::event_type(), "SimpleEvent");
+    assert_eq!(
+        SimpleEvent::event_type(),
+        concat!(module_path!(), "::SimpleEvent")
+    );
 }
 
 #[test]

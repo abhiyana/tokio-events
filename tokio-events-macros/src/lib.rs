@@ -8,7 +8,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     let name = &input.ident;
 
     // Default event_type is the struct name
-    let mut event_type_val = name.to_string();
+    let mut event_type_val = None;
     let mut format_val = "json".to_string();
 
     // Look for #[event(event_type = "...", format = "...")] attribute
@@ -18,7 +18,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 if meta.path.is_ident("event_type") {
                     let value = meta.value()?;
                     let lit: LitStr = value.parse()?;
-                    event_type_val = lit.value();
+                    event_type_val = Some(lit.value());
                     Ok(())
                 } else if meta.path.is_ident("format") {
                     let value = meta.value()?;
@@ -58,12 +58,18 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     };
 
+    let event_type_impl = if let Some(val) = event_type_val {
+        quote! { #val }
+    } else {
+        quote! { concat!(module_path!(), "::", stringify!(#name)) }
+    };
+
     let expanded = quote! {
         impl tokio_events::Event for #name {
             fn event_type() -> &'static str {
-                #event_type_val
+                #event_type_impl
             }
-            
+
             #serialization_impl
         }
     };

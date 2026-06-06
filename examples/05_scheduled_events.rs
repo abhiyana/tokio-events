@@ -1,6 +1,6 @@
+use chrono::Utc;
 use std::time::Duration;
 use tokio_events::prelude::*;
-use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
 struct ReminderEmail {
@@ -15,22 +15,35 @@ async fn main() -> Result<()> {
     // (If you enable the persistence feature, this will automatically use the Poller architecture for 100% crash resilience).
     let bus = EventBusBuilder::new().build().await?;
 
-    let _handle = bus.subscribe(|event: ReminderEmail| async move {
-        println!("🕒 [Subscriber] Event Fired! Sending '{}' email to User {}", event.template, event.user_id);
-    }).await?;
+    let _handle = bus
+        .subscribe(|event: ReminderEmail| async move {
+            println!(
+                "🕒 [Subscriber] Event Fired! Sending '{}' email to User {}",
+                event.template, event.user_id
+            );
+        })
+        .await?;
 
     println!("1. Publishing a delayed event (Fires in 3 seconds)...");
-    bus.publish_delayed(ReminderEmail {
-        user_id: 42,
-        template: "abandoned_cart".to_string(),
-    }, Duration::from_secs(3)).await?;
+    bus.publish_delayed(
+        ReminderEmail {
+            user_id: 42,
+            template: "abandoned_cart".to_string(),
+        },
+        Duration::from_secs(3),
+    )
+    .await?;
 
     println!("2. Publishing a scheduled event (Fires at an exact timestamp in 1 second)...");
     let future_time = Utc::now() + Duration::from_secs(1);
-    bus.publish_scheduled(ReminderEmail {
-        user_id: 99,
-        template: "welcome_series_2".to_string(),
-    }, future_time).await?;
+    bus.publish_scheduled(
+        ReminderEmail {
+            user_id: 99,
+            template: "welcome_series_2".to_string(),
+        },
+        future_time,
+    )
+    .await?;
 
     println!("Events published! Waiting for them to fire...\n");
 

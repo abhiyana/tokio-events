@@ -8,7 +8,12 @@ use uuid::Uuid;
 
 /// A handle to an active subscription.
 ///
-/// When dropped, the subscription is automatically unsubscribed.
+/// The `SubscriptionHandle` manages the lifecycle of an event subscription.
+/// When the handle is dropped (or explicitly unsubscribed), the event bus will
+/// clean up the routing channels and stop delivering events to the associated handler.
+///
+/// **Note**: Dropping this handle acts as an implicit unsubscription unless
+/// configured otherwise during subscription creation.
 #[derive(Clone)]
 pub struct SubscriptionHandle {
     /// Unique ID for this subscription
@@ -52,7 +57,15 @@ impl SubscriptionHandle {
         self.name.as_deref()
     }
 
-    /// Unsubscribe this subscription
+    /// Explicitly unsubscribe this subscription from the event bus.
+    ///
+    /// This immediately halts delivery of new events to the handler and tears down
+    /// internal routing queues. Any events already buffered in the channel will still
+    /// be processed by the handler until the channel is drained.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` upon successfully sending the unsubscribe signal.
     pub async fn unsubscribe(self) -> Result<()> {
         let mut sender = self.unsubscribe_sender.lock().await;
         if let Some(tx) = sender.take() {
@@ -94,7 +107,11 @@ pub struct SubscriptionBuilder {
 }
 
 impl SubscriptionBuilder {
-    /// Create a new subscription builder
+    /// Create a new subscription builder.
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `SubscriptionBuilder` with default configurations.
     pub fn new() -> Self {
         Self {
             name: None,
@@ -102,13 +119,21 @@ impl SubscriptionBuilder {
         }
     }
 
-    /// Set the subscription name
+    /// Set the name of the subscription for debugging and metrics.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - A human-readable identifier for this subscription.
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
-    /// Set whether to automatically unsubscribe on drop
+    /// Set whether the subscription should automatically unsubscribe when the handle is dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `auto` - If `true` (default), dropping the handle terminates the subscription.
     pub fn auto_unsubscribe(mut self, auto: bool) -> Self {
         self.auto_unsubscribe = auto;
         self

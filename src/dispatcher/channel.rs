@@ -213,7 +213,9 @@ impl EventDispatcher for ChannelDispatcher {
 
         // Wait for worker to finish draining the queue
         if let Some(handle) = self.worker_handle.take() {
-            let _ = handle.await.map_err(|e| Error::internal(format!("Worker panicked: {}", e)));
+            let _ = handle
+                .await
+                .map_err(|e| Error::internal(format!("Worker panicked: {}", e)));
         }
 
         self.is_running.store(false, Ordering::SeqCst);
@@ -231,9 +233,16 @@ impl EventDispatcher for ChannelDispatcher {
             let now = chrono::Utc::now();
             if deliver_at > now {
                 if let Ok(delay) = (deliver_at - now).to_std() {
+                    tracing::warn!(
+                        "Event {} scheduled for {:?} using in-memory ChannelDispatcher. \
+                        If the process crashes before this time, the event will be lost permanently. \
+                        Enable the 'persistence' feature and use RedbDispatcher for durable scheduled events.",
+                        envelope.event_id(),
+                        deliver_at
+                    );
                     let sender_opt = self.sender.clone();
                     let envelope_arc = Arc::new(envelope);
-                    
+
                     tokio::spawn(async move {
                         tokio::time::sleep(delay).await;
                         // After waking up, send it to the queue
@@ -241,7 +250,7 @@ impl EventDispatcher for ChannelDispatcher {
                             let _ = sender.send(envelope_arc).await;
                         }
                     });
-                    
+
                     return Ok(());
                 }
             }
@@ -252,9 +261,7 @@ impl EventDispatcher for ChannelDispatcher {
         let sender = self.sender.as_ref().ok_or_else(|| Error::ShuttingDown)?;
 
         // Update max queue size
-        let current_size = sender
-            .max_capacity()
-            .saturating_sub(sender.capacity());
+        let current_size = sender.max_capacity().saturating_sub(sender.capacity());
         let max_size = self.max_queue_size.load(Ordering::Relaxed);
         if current_size as u64 > max_size {
             self.max_queue_size
@@ -288,7 +295,11 @@ impl EventDispatcher for ChannelDispatcher {
     fn stats(&self) -> DispatcherStats {
         let events_dispatched = self.events_dispatched.load(Ordering::Relaxed);
         let total_time = self.total_dispatch_time_us.load(Ordering::Relaxed);
-        let current_queue = self.sender.as_ref().map(|s| s.max_capacity() - s.capacity()).unwrap_or(0);
+        let current_queue = self
+            .sender
+            .as_ref()
+            .map(|s| s.max_capacity() - s.capacity())
+            .unwrap_or(0);
 
         DispatcherStats {
             events_dispatched,
@@ -319,7 +330,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

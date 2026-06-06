@@ -15,7 +15,11 @@ struct UserCreated {
 #[ignore = "Requires local NATS server running on port 4222"]
 async fn test_publish_remote() {
     let bus = EventBusBuilder::new()
-        .with_nats_jetstream("nats://127.0.0.1:4222", "TEST_EVENTS", vec!["user.>".to_string()])
+        .with_nats_jetstream(
+            "nats://127.0.0.1:4222",
+            "TEST_EVENTS",
+            vec!["user.>".to_string()],
+        )
         .build()
         .await
         .unwrap();
@@ -44,7 +48,9 @@ async fn test_publish_remote() {
 
     // Verify it was routed locally
     let mut found = false;
-    while let Ok(Some(received)) = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+    while let Ok(Some(received)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+    {
         if received.name == unique_name {
             found = true;
             break;
@@ -64,7 +70,11 @@ struct UserUpdated {
 #[ignore = "Requires local NATS server running on port 4222"]
 async fn test_subscribe_remote() {
     let bus = EventBusBuilder::new()
-        .with_nats_jetstream("nats://127.0.0.1:4222", "TEST_EVENTS", vec!["user.>".to_string()])
+        .with_nats_jetstream(
+            "nats://127.0.0.1:4222",
+            "TEST_EVENTS",
+            vec!["user.>".to_string()],
+        )
         .build()
         .await
         .unwrap();
@@ -88,14 +98,19 @@ async fn test_subscribe_remote() {
         id: Uuid::new_v4(),
         name: unique_name.clone(),
     };
-    
+
     let nats_client = async_nats::connect("nats://127.0.0.1:4222").await.unwrap();
     let payload = serde_json::to_vec(&event).unwrap();
-    nats_client.publish(UserUpdated::remote_topic().to_string(), payload.into()).await.unwrap();
+    nats_client
+        .publish(UserUpdated::remote_topic().to_string(), payload.into())
+        .await
+        .unwrap();
 
     // Verify we received it via the background consumer loop!
     let mut found = false;
-    while let Ok(Some(received)) = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+    while let Ok(Some(received)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+    {
         if received.name == unique_name {
             found = true;
             break;
@@ -118,7 +133,9 @@ async fn test_publish_remote_core_nats_opt_out() {
     let _handle = bus
         .subscribe_remote("core_queue_group", move |event: UserCreated| {
             let tx = tx.clone();
-            async move { tx.send(event).await.unwrap(); }
+            async move {
+                tx.send(event).await.unwrap();
+            }
         })
         .await
         .unwrap();
@@ -126,11 +143,22 @@ async fn test_publish_remote_core_nats_opt_out() {
     // Publish manually to bypass outbox local routing
     let unique_name = format!("Core-{}", Uuid::new_v4());
     let nats_client = async_nats::connect("nats://127.0.0.1:4222").await.unwrap();
-    let event = UserCreated { id: Uuid::new_v4(), name: unique_name.clone() };
-    nats_client.publish(UserCreated::remote_topic().to_string(), serde_json::to_vec(&event).unwrap().into()).await.unwrap();
+    let event = UserCreated {
+        id: Uuid::new_v4(),
+        name: unique_name.clone(),
+    };
+    nats_client
+        .publish(
+            UserCreated::remote_topic().to_string(),
+            serde_json::to_vec(&event).unwrap().into(),
+        )
+        .await
+        .unwrap();
 
     let mut found = false;
-    while let Ok(Some(received)) = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+    while let Ok(Some(received)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+    {
         if received.name == unique_name {
             found = true;
             break;
@@ -143,34 +171,59 @@ async fn test_publish_remote_core_nats_opt_out() {
 #[ignore = "Requires local NATS server running on port 4222"]
 async fn test_network_poison_pill_dlq() {
     let bus = EventBusBuilder::new()
-        .with_nats_jetstream("nats://127.0.0.1:4222", "TEST_EVENTS", vec!["user.>".to_string()])
+        .with_nats_jetstream(
+            "nats://127.0.0.1:4222",
+            "TEST_EVENTS",
+            vec!["user.>".to_string()],
+        )
         .build()
         .await
         .unwrap();
 
-    let mut dlq_rx = bus.take_dlq_receiver().await.expect("DLQ receiver was missing");
+    let mut dlq_rx = bus
+        .take_dlq_receiver()
+        .await
+        .expect("DLQ receiver was missing");
 
     let _handle = bus
-        .subscribe_remote("poison_queue_group", move |_event: UserUpdated| async move {})
+        .subscribe_remote(
+            "poison_queue_group",
+            move |_event: UserUpdated| async move {},
+        )
         .await
         .unwrap();
 
     // Send malformed JSON to the network topic!
     let nats_client = async_nats::connect("nats://127.0.0.1:4222").await.unwrap();
-    nats_client.publish(UserUpdated::remote_topic().to_string(), b"{ bad json [".to_vec().into()).await.unwrap();
+    nats_client
+        .publish(
+            UserUpdated::remote_topic().to_string(),
+            b"{ bad json [".to_vec().into(),
+        )
+        .await
+        .unwrap();
 
     // The consumer loop should catch the deserialization error, package it in an envelope, and send it to DLQ.
     let dlq_envelope = tokio::time::timeout(std::time::Duration::from_secs(2), dlq_rx.recv())
-        .await.expect("Timeout waiting for DLQ").expect("DLQ closed");
+        .await
+        .expect("Timeout waiting for DLQ")
+        .expect("DLQ closed");
 
-    assert_eq!(dlq_envelope.payload_bytes(), Some(b"{ bad json [".as_slice()));
+    assert_eq!(
+        dlq_envelope.payload_bytes(),
+        Some(b"{ bad json [".as_slice())
+    );
 }
 
 #[tokio::test]
 #[ignore = "Requires local NATS server running on port 4222"]
 async fn test_jetstream_exactly_once_deduplication() {
     let bus = EventBusBuilder::new()
-        .with_nats_jetstream("nats://127.0.0.1:4222", "TEST_EVENTS", vec!["user.>".to_string()])
+        .with_nats_jetstream(
+            "nats://127.0.0.1:4222",
+            "TEST_EVENTS",
+            vec!["user.>".to_string()],
+        )
         .build()
         .await
         .unwrap();
@@ -180,43 +233,69 @@ async fn test_jetstream_exactly_once_deduplication() {
     let _handle = bus
         .subscribe_remote("dedup_queue_group", move |event: UserCreated| {
             let tx = tx.clone();
-            async move { tx.send(event).await.unwrap(); }
+            async move {
+                tx.send(event).await.unwrap();
+            }
         })
         .await
         .unwrap();
 
     let nats_client = async_nats::connect("nats://127.0.0.1:4222").await.unwrap();
     let js = async_nats::jetstream::new(nats_client);
-    
+
     let unique_name = format!("Dedup-{}", Uuid::new_v4());
-    let event = UserCreated { id: Uuid::new_v4(), name: unique_name.clone() };
+    let event = UserCreated {
+        id: Uuid::new_v4(),
+        name: unique_name.clone(),
+    };
     let payload = serde_json::to_vec(&event).unwrap();
-    
+
     // Create headers with a static message ID
     let mut headers = async_nats::HeaderMap::new();
     let msg_id = Uuid::new_v4().to_string();
     headers.insert("Nats-Msg-Id", msg_id.as_str());
 
     // Publish the EXACT same message TWICE
-    js.publish_with_headers(UserCreated::remote_topic().to_string(), headers.clone(), payload.clone().into()).await.unwrap();
-    js.publish_with_headers(UserCreated::remote_topic().to_string(), headers, payload.into()).await.unwrap();
+    js.publish_with_headers(
+        UserCreated::remote_topic().to_string(),
+        headers.clone(),
+        payload.clone().into(),
+    )
+    .await
+    .unwrap();
+    js.publish_with_headers(
+        UserCreated::remote_topic().to_string(),
+        headers,
+        payload.into(),
+    )
+    .await
+    .unwrap();
 
     // Receive the first one
     let mut count = 0;
-    while let Ok(Some(received)) = tokio::time::timeout(std::time::Duration::from_millis(1500), rx.recv()).await {
+    while let Ok(Some(received)) =
+        tokio::time::timeout(std::time::Duration::from_millis(1500), rx.recv()).await
+    {
         if received.name == unique_name {
             count += 1;
         }
     }
-    
-    assert_eq!(count, 1, "Expected exactly 1 delivery of the duplicated message!");
+
+    assert_eq!(
+        count, 1,
+        "Expected exactly 1 delivery of the duplicated message!"
+    );
 }
 
 #[tokio::test]
 #[ignore = "Requires local NATS server running on port 4222"]
 async fn test_payload_too_large_rejection() {
     let bus = EventBusBuilder::new()
-        .with_nats_jetstream("nats://127.0.0.1:4222", "TEST_EVENTS", vec!["user.>".to_string()])
+        .with_nats_jetstream(
+            "nats://127.0.0.1:4222",
+            "TEST_EVENTS",
+            vec!["user.>".to_string()],
+        )
         .build()
         .await
         .unwrap();
@@ -230,7 +309,7 @@ async fn test_payload_too_large_rejection() {
 
     // This should immediately return a PayloadTooLarge error before hitting NATS
     let result = bus.publish_remote(event).await;
-    
+
     assert!(result.is_err(), "Expected publish to fail for huge payload");
     if let Err(tokio_events::Error::PayloadTooLarge { size, max }) = result {
         assert!(size > 1024 * 1024);
@@ -291,12 +370,26 @@ struct MockDelayTransport {
 
 #[async_trait::async_trait]
 impl tokio_events::remote::RemoteTransport for MockDelayTransport {
-    async fn publish(&self, topic: &str, _payload: &[u8], _msg_id: Option<&str>) -> tokio_events::Result<()> {
-        self.published_topics.lock().unwrap().push(topic.to_string());
+    async fn publish(
+        &self,
+        topic: &str,
+        _payload: &[u8],
+        _msg_id: Option<&str>,
+    ) -> tokio_events::Result<()> {
+        self.published_topics
+            .lock()
+            .unwrap()
+            .push(topic.to_string());
         Ok(())
     }
 
-    async fn subscribe(&self, _topic: &str, _queue_group: &str) -> tokio_events::Result<futures::stream::BoxStream<'static, Vec<u8>>> {
+    async fn subscribe(
+        &self,
+        _topic: &str,
+        _queue_group: &str,
+    ) -> tokio_events::Result<
+        futures::stream::BoxStream<'static, (Vec<u8>, tokio::sync::oneshot::Sender<()>)>,
+    > {
         Ok(Box::pin(futures::stream::empty()))
     }
 }
@@ -304,7 +397,9 @@ impl tokio_events::remote::RemoteTransport for MockDelayTransport {
 #[tokio::test]
 async fn test_publish_remote_delayed_mock() {
     let published_topics = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mock = MockDelayTransport { published_topics: published_topics.clone() };
+    let mock = MockDelayTransport {
+        published_topics: published_topics.clone(),
+    };
 
     let bus = EventBusBuilder::new()
         .with_custom_transport(std::sync::Arc::new(mock))
@@ -318,7 +413,9 @@ async fn test_publish_remote_delayed_mock() {
     };
 
     // Publish with 200ms delay
-    bus.publish_remote_delayed(event, std::time::Duration::from_millis(200)).await.unwrap();
+    bus.publish_remote_delayed(event, std::time::Duration::from_millis(200))
+        .await
+        .unwrap();
 
     // Check instantly - should be empty
     assert_eq!(published_topics.lock().unwrap().len(), 0);

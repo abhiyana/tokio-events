@@ -70,11 +70,12 @@ pub struct EventBus {
     pub(crate) config: EventBusConfig,
     pub(crate) registry: Arc<dyn EventRegistry>,
     pub(crate) subscription_manager: Arc<SubscriptionManager>,
-    pub(crate) dispatcher: Arc<tokio::sync::Mutex<Option<Box<dyn EventDispatcher>>>>,
+    pub(crate) dispatcher: Arc<tokio::sync::RwLock<Option<Box<dyn EventDispatcher>>>>,
     pub(crate) shutdown_hooks: Arc<Mutex<Vec<ShutdownHook>>>,
     pub(crate) is_shutting_down: Arc<AtomicBool>,
-    pub(crate) dlq_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>>>>,
-    
+    pub(crate) dlq_rx:
+        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>>>>,
+
     #[cfg(feature = "remote")]
     pub(crate) remote_transport: Option<Arc<dyn crate::remote::RemoteTransport>>,
 }
@@ -86,19 +87,53 @@ impl EventBus {
     }
 
     /// Take the Dead Letter Queue (DLQ) receiver.
-    /// 
+    ///
     /// This can only be called once. Returns `None` if it has already been taken.
-    pub async fn take_dlq_receiver(&self) -> Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>> {
+    pub async fn take_dlq_receiver(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>> {
         self.dlq_rx.lock().await.take()
     }
 
-    /// Publish an event to all subscribers
+    /// Publish an event to all subscribers.
+    ///
+    /// The event will be wrapped in an `EventEnvelope` with default metadata (including
+    /// a newly generated UUID for the event ID) and dispatched to all matching subscriptions.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The event payload to publish. Must implement the `Event` trait.
+    ///
+    /// # Returns
+    ///
+    /// Returns the unique `Uuid` of the published event if successful.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event bus is currently shutting down, or if the
+    /// underlying dispatcher fails to accept the event.
     pub async fn publish<T: Event>(&self, event: T) -> Result<Uuid> {
         self.publish_with_metadata(event, EventMetadata::new())
             .await
     }
 
-    /// Publish an event with custom metadata
+    /// Publish an event with custom metadata.
+    ///
+    /// This allows attaching contextual information such as correlation IDs, causation IDs,
+    /// topics, or scheduling constraints to an event before dispatching it.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The event payload to publish. Must implement the `Event` trait.
+    /// * `metadata` - The `EventMetadata` to associate with this event.
+    ///
+    /// # Returns
+    ///
+    /// Returns the unique `Uuid` of the published event if successful.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event bus is shutting down or if dispatch fails.
     pub async fn publish_with_metadata<T: Event>(
         &self,
         event: T,
@@ -120,7 +155,7 @@ impl EventBus {
 
         // Dispatch the event
         {
-            let guard = self.dispatcher.lock().await;
+            let guard = self.dispatcher.read().await;
             let dispatcher = guard.as_ref().ok_or(Error::ShuttingDown)?;
             dispatcher.dispatch(envelope).await?;
         }
@@ -130,14 +165,30 @@ impl EventBus {
             event_type = T::event_type(),
             "Event published successfully"
         );
-        
+
         #[cfg(feature = "metrics")]
-        metrics::counter!("tokio_events_published_total", "type" => T::event_type().to_string()).increment(1);
+        metrics::counter!("tokio_events_published_total", "type" => T::event_type().to_string())
+            .increment(1);
 
         Ok(event_id)
     }
 
     /// Publish an event with a specific delay before it is routed to subscribers.
+    ///
+    /// This is a convenience wrapper around `publish_with_metadata` that sets a delivery delay.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The event payload to publish.
+    /// * `delay` - The `Duration` to wait before delivering the event to subscribers.
+    ///
+    /// # Returns
+    ///
+    /// Returns the `Uuid` of the published event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the event bus is shutting down or if dispatch fails.
     pub async fn publish_delayed<T: Event>(
         &self,
         event: T,
@@ -147,7 +198,33 @@ impl EventBus {
         self.publish_with_metadata(event, metadata).await
     }
 
+    /// Publish an event to a specific topic (for Subject-Based Routing).
+    ///
+    /// Subscriptions matching this exact topic string will receive the event.
+    ///
+    /// # Arguments
+    ///
+    /// * `topic` - The routing key or topic string.
+    /// * `event` - The event payload to publish.
+    ///
+    /// # Returns
+    ///
+    /// Returns the `Uuid` of the published event.
+    pub async fn publish_to<T: Event>(&self, topic: impl Into<String>, event: T) -> Result<Uuid> {
+        let metadata = EventMetadata::new().with_topic(topic);
+        self.publish_with_metadata(event, metadata).await
+    }
+
     /// Publish an event scheduled for an exact future time.
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The event payload to publish.
+    /// * `deliver_at` - The exact UTC `DateTime` when the event should be dispatched.
+    ///
+    /// # Returns
+    ///
+    /// Returns the `Uuid` of the published event.
     pub async fn publish_scheduled<T: Event>(
         &self,
         event: T,
@@ -157,7 +234,22 @@ impl EventBus {
         self.publish_with_metadata(event, metadata).await
     }
 
-    /// Subscribe to events of a specific type
+    /// Subscribe a handler to events of a specific type.
+    ///
+    /// The provided async closure will be invoked for every published event that matches type `T`.
+    ///
+    /// # Arguments
+    ///
+    /// * `handler` - An asynchronous closure or function that takes the event `T` and returns a `Future`.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SubscriptionHandle` that manages the lifecycle of the subscription.
+    /// Dropping the handle may automatically unsubscribe, depending on its configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bus is shutting down or if registration fails.
     pub async fn subscribe<T, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -169,6 +261,127 @@ impl EventBus {
         }
 
         self.subscription_manager.subscribe_fn(handler).await
+    }
+
+    /// Subscribe a handler to events on a specific wildcard or literal topic.
+    ///
+    /// # Arguments
+    ///
+    /// * `topic` - The topic string to match against published events.
+    /// * `handler` - The async closure to execute when an event arrives.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `SubscriptionHandle`.
+    pub async fn subscribe_topic<T, F, Fut>(
+        &self,
+        topic: &str,
+        handler: F,
+    ) -> Result<SubscriptionHandle>
+    where
+        T: Event,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::ShuttingDown);
+        }
+
+        self.subscription_manager
+            .subscribe_topic_fn(topic, handler)
+            .await
+    }
+
+    /// Perform a Request-Reply (RPC) call over the event bus.
+    ///
+    /// This method generates an ephemeral inbox topic, subscribes to it, publishes the provided
+    /// request event with a `reply_to` metadata field pointing to the inbox, and awaits exactly
+    /// one response event before automatically tearing down the ephemeral subscription.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The event payload serving as the request.
+    ///
+    /// # Returns
+    ///
+    /// Returns the response event of type `Res`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the responder drops the channel without replying, or if the request
+    /// times out after the default 30-second waiting period.
+    pub async fn request<Req, Res>(&self, request: Req) -> Result<Res>
+    where
+        Req: Event,
+        Res: Event,
+    {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::ShuttingDown);
+        }
+
+        let inbox_topic = format!("_INBOX.{}", Uuid::new_v4());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Wrap the sender in an Option in a Mutex so the handler can take it once
+        let tx = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+        // Subscribe to the inbox topic
+        let handle = self
+            .subscribe_topic(&inbox_topic, move |response: Res| {
+                let tx = tx.clone();
+                async move {
+                    let mut tx_guard = tx.lock().await;
+                    if let Some(sender) = tx_guard.take() {
+                        let _ = sender.send(response);
+                    }
+                }
+            })
+            .await?;
+
+        // Publish the request with reply_to
+        let metadata = EventMetadata::new().with_reply_to(&inbox_topic);
+        self.publish_with_metadata(request, metadata).await?;
+
+        // Wait for the response (with a timeout of 30 seconds to prevent hanging)
+        let response = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(res)) => Ok(res),
+            Ok(Err(_)) => Err(Error::internal(
+                "Responder dropped the channel without replying",
+            )),
+            Err(_) => Err(Error::internal("Request timed out after 30 seconds")),
+        };
+
+        // Cleanup the ephemeral subscription
+        let _ = self.unsubscribe(handle).await;
+
+        response
+    }
+
+    /// Register a responder for Request-Reply (RPC) pattern
+    ///
+    /// The handler receives requests and returns a response, which is automatically published
+    /// to the request's `reply_to` topic.
+    pub async fn respond<Req, Res, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
+    where
+        Req: Event,
+        Res: Event,
+        F: Fn(Req) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Res> + Send + 'static,
+    {
+        if self.is_shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::ShuttingDown);
+        }
+
+        let responder = ResponderHandler {
+            bus: self.clone(),
+            handler,
+            _phantom: std::marker::PhantomData,
+        };
+
+        let name = format!("RPCResponder<{}>", Req::event_type());
+        self.subscription_manager
+            .subscribe_typed::<Req, _>(responder, name, None)
+            .await
     }
 
     /// Subscribe to events of a specific type with a handler that can fail.
@@ -186,7 +399,9 @@ impl EventBus {
         }
 
         let function_handler = crate::subscription::handler::FallibleFunctionHandler::new(handler);
-        self.subscription_manager.subscribe::<T, _>(function_handler).await
+        self.subscription_manager
+            .subscribe::<T, _>(function_handler)
+            .await
     }
 
     /// Subscribe with a custom handler implementation
@@ -221,22 +436,26 @@ impl EventBus {
     {
         // 1. Subscribe locally first
         let handle = self.subscribe(handler).await?;
-        
+
         // 2. Connect the inbound network stream to the local dispatcher
         if let Some(transport) = &self.remote_transport {
             use futures::StreamExt;
-            
+
             let topic = T::remote_topic();
             let mut stream = transport.subscribe(topic, queue_group).await?;
-            
+
             // We need a clone of the event bus to publish inbound events locally
             let local_bus = self.clone();
             let queue_group_owned = queue_group.to_string();
-            
+
             tokio::spawn(async move {
-                tracing::info!("Started Remote Consumer Loop for topic: {} (group: {})", topic, queue_group_owned);
-                
-                while let Some(bytes) = stream.next().await {
+                tracing::info!(
+                    "Started Remote Consumer Loop for topic: {} (group: {})",
+                    topic,
+                    queue_group_owned
+                );
+
+                while let Some((bytes, ack_tx)) = stream.next().await {
                     match T::deserialize_event(&bytes) {
                         Ok(event) => {
                             // Successfully deserialized! Inject it into the local memory bus.
@@ -246,30 +465,51 @@ impl EventBus {
                         }
                         Err(e) => {
                             // MITIGATION: Network Poison Pill DLQ
-                            tracing::error!("Failed to deserialize remote event on topic {}: {}", topic, e);
-                            
+                            tracing::error!(
+                                "Failed to deserialize remote event on topic {}: {}",
+                                topic,
+                                e
+                            );
+
                             if let Some(dlq_tx) = local_bus.subscription_manager.dlq_tx() {
-                                let mut envelope = EventEnvelope::new(
-                                    crate::event::BroadcastEvent { message: "Poison Pill".to_string() }
-                                );
+                                let mut envelope =
+                                    EventEnvelope::new(crate::event::BroadcastEvent {
+                                        message: "Poison Pill".to_string(),
+                                    });
                                 envelope.payload_bytes = Some(bytes);
-                                
+
                                 let _ = dlq_tx.send(Arc::new(envelope)).await;
                             }
                         }
                     }
+
+                    // Trigger NATS acknowledgment after successful local routing or DLQ drop.
+                    // This guarantees At-Least-Once delivery!
+                    let _ = ack_tx.send(());
                 }
-                
+
                 tracing::info!("Remote Consumer Loop stopped for topic: {}", topic);
             });
         } else {
             tracing::warn!("subscribe_remote called without a remote_transport configured! Only listening locally.");
         }
-        
+
         Ok(handle)
     }
 
-    /// Unsubscribe a handler
+    /// Unsubscribe an active subscription.
+    ///
+    /// # Arguments
+    ///
+    /// * `handle` - The `SubscriptionHandle` corresponding to the subscription to remove.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if successfully unsubscribed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription was not found or if the event bus is shutting down.
     pub async fn unsubscribe(&self, handle: SubscriptionHandle) -> Result<()> {
         self.subscription_manager.unsubscribe(handle).await
     }
@@ -281,7 +521,7 @@ impl EventBus {
     /// and inject them into the memory queues of the currently active subscribers.
     /// If you do not use the `persistence` feature, this method does nothing.
     pub async fn replay_pending(&self) -> Result<()> {
-        let mut dispatcher_guard = self.dispatcher.lock().await;
+        let mut dispatcher_guard = self.dispatcher.write().await;
         if let Some(dispatcher) = dispatcher_guard.as_mut() {
             dispatcher.replay_pending().await
         } else {
@@ -298,17 +538,16 @@ impl EventBus {
     pub async fn publish_remote<T: crate::event::Remote>(&self, event: T) -> Result<Uuid> {
         let topic = T::remote_topic();
         let payload = event.serialize_event()?;
-            
-        // 1. We ALWAYS route it locally first!
-        // This is the Outbox Pattern: it ensures the event is saved to redb (if configured)
-        // and routed to any local subscribers before we hit the network.
-        let event_id = self.publish(event).await?;
-        
+
+        let event_id = Uuid::new_v4();
+
         // 2. We route it over the network
         if let Some(transport) = &self.remote_transport {
             let msg_id = event_id.to_string();
             // We pass the envelope ID as the `msg_id` for NATS exactly-once deduplication!
-            transport.publish(topic, &payload, Some(&msg_id)).await?;
+            transport
+                .publish(topic, &payload, Some(msg_id.as_str()))
+                .await?;
         } else {
             tracing::warn!("publish_remote called on EventBus without a remote_transport configured! Event {} was only routed locally.", event_id);
         }
@@ -330,19 +569,22 @@ impl EventBus {
     ) -> Result<Uuid> {
         let topic = T::remote_topic();
         let payload = event.serialize_event()?;
-            
+
         // 1. Publish locally WITH the delay (This guarantees local crash resilience via Redb)
         let event_id = self.publish_delayed(event, delay).await?;
-        
+
         // 2. Schedule the network publish
         if let Some(transport) = &self.remote_transport {
             let msg_id = event_id.to_string();
             let transport_clone = transport.clone();
             let topic_owned = topic.to_string();
-            
+
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
-                if let Err(e) = transport_clone.publish(&topic_owned, &payload, Some(&msg_id)).await {
+                if let Err(e) = transport_clone
+                    .publish(&topic_owned, &payload, Some(&msg_id))
+                    .await
+                {
                     tracing::error!("Failed to route delayed remote event: {}", e);
                 }
             });
@@ -365,10 +607,10 @@ impl EventBus {
     ) -> Result<Uuid> {
         let topic = T::remote_topic();
         let payload = event.serialize_event()?;
-            
+
         // 1. Publish locally WITH the schedule
         let event_id = self.publish_scheduled(event, deliver_at).await?;
-        
+
         // 2. Schedule the network publish
         if let Some(transport) = &self.remote_transport {
             let now = chrono::Utc::now();
@@ -380,24 +622,36 @@ impl EventBus {
                 if let Ok(delay) = (deliver_at - now).to_std() {
                     tokio::spawn(async move {
                         tokio::time::sleep(delay).await;
-                        if let Err(e) = transport_clone.publish(&topic_owned, &payload, Some(&msg_id)).await {
+                        if let Err(e) = transport_clone
+                            .publish(&topic_owned, &payload, Some(msg_id.as_str()))
+                            .await
+                        {
                             tracing::error!("Failed to route scheduled remote event: {}", e);
                         }
                     });
                 }
             } else {
                 // Time has already passed, publish immediately
-                transport.publish(&topic, &payload, Some(&msg_id)).await?;
+                transport
+                    .publish(topic, &payload, Some(msg_id.as_str()))
+                    .await?;
             }
         }
 
         Ok(event_id)
     }
 
-    /// Get statistics about the event bus
+    /// Retrieve statistics about the event bus.
+    ///
+    /// # Returns
+    ///
+    /// Returns an `EventBusStats` struct containing snapshots of processed events,
+    /// errors, and subscription counts.
     pub fn stats(&self) -> EventBusStats {
         // Try to get dispatcher stats; if shutdown already took it, use defaults
-        let dispatcher_stats = self.dispatcher.try_lock()
+        let dispatcher_stats = self
+            .dispatcher
+            .try_read()
             .ok()
             .and_then(|guard| guard.as_ref().map(|d| d.stats()))
             .unwrap_or_default();
@@ -424,7 +678,11 @@ impl EventBus {
         Ok(())
     }
 
-    /// Check if the event bus is shutting down
+    /// Check if the event bus is currently in the process of shutting down.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if shutting down, `false` otherwise.
     pub fn is_shutting_down(&self) -> bool {
         self.is_shutting_down.load(Ordering::SeqCst)
     }
@@ -449,7 +707,7 @@ impl EventBus {
 
         // Take and stop the dispatcher with timeout
         let dispatcher_shutdown = tokio::time::timeout(self.config.shutdown_timeout, async {
-            let mut guard = self.dispatcher.lock().await;
+            let mut guard = self.dispatcher.write().await;
             if let Some(mut dispatcher) = guard.take() {
                 dispatcher.stop().await
             } else {
@@ -468,12 +726,17 @@ impl EventBus {
         Ok(())
     }
 
-    /// Shutdown the event bus gracefully
-    /// 
-    /// This will prevent new events from being published, wait for the dispatcher to route
-    /// all buffered events, and wait for all handler tasks to finish processing their events.
+    /// Shut down the event bus gracefully.
     ///
-    /// This method works via `&self` so you can call it on an `Arc<EventBus>`.
+    /// This method performs an orchestrated shutdown:
+    /// 1. Sets the shutting down flag to reject new events.
+    /// 2. Executes all registered shutdown hooks concurrently.
+    /// 3. Signals the dispatcher to finish processing currently queued events.
+    /// 4. Shuts down the subscription manager and unregisters all handlers.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` once all internal components have successfully terminated.
     pub async fn shutdown_gracefully(&self) -> Result<()> {
         info!("Shutting down EventBus gracefully");
 
@@ -491,7 +754,7 @@ impl EventBus {
 
         // Take and gracefully drain the dispatcher
         {
-            let mut guard = self.dispatcher.lock().await;
+            let mut guard = self.dispatcher.write().await;
             if let Some(mut dispatcher) = guard.take() {
                 if let Err(e) = dispatcher.shutdown_gracefully().await {
                     error!("Dispatcher graceful shutdown failed: {}", e);
@@ -503,6 +766,49 @@ impl EventBus {
         self.subscription_manager.shutdown_gracefully().await;
 
         info!("EventBus graceful shutdown complete");
+        Ok(())
+    }
+}
+
+#[allow(missing_debug_implementations)]
+struct ResponderHandler<Req, Res, F, Fut>
+where
+    Req: Event,
+    Res: Event,
+    F: Fn(Req) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Res> + Send + 'static,
+{
+    bus: EventBus,
+    handler: F,
+    _phantom: std::marker::PhantomData<fn(Req) -> Res>,
+}
+
+#[async_trait::async_trait]
+impl<Req, Res, F, Fut> crate::subscription::handler::EventHandler
+    for ResponderHandler<Req, Res, F, Fut>
+where
+    Req: Event,
+    Res: Event,
+    F: Fn(Req) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Res> + Send + 'static,
+{
+    async fn handle(&self, envelope: &EventEnvelope) -> Result<()> {
+        let req = envelope.get_event::<Req>()?;
+        let response = (self.handler)(req).await;
+
+        if let Some(reply_to) = &envelope.metadata.reply_to {
+            let mut metadata = EventMetadata::new().with_topic(reply_to);
+            metadata.correlation_id = envelope
+                .metadata
+                .correlation_id
+                .or(Some(envelope.event_id()));
+            metadata.causation_id = Some(envelope.event_id());
+
+            self.bus.publish_with_metadata(response, metadata).await?;
+        } else {
+            tracing::warn!("Received RPC request without a reply_to topic!");
+        }
+
         Ok(())
     }
 }
@@ -552,7 +858,8 @@ mod tests {
             serde_json::to_vec(self).map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
         fn deserialize_event(bytes: &[u8]) -> crate::Result<Self> {
-            serde_json::from_slice(bytes).map_err(|e| crate::Error::SerializationError(e.to_string()))
+            serde_json::from_slice(bytes)
+                .map_err(|e| crate::Error::SerializationError(e.to_string()))
         }
     }
 

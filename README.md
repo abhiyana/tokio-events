@@ -21,7 +21,7 @@ A modern, type-safe, asynchronous event bus for Rust applications built on `toki
 Add the dependency to your `Cargo.toml`:
 ```toml
 [dependencies]
-tokio-events = "0.2.3"
+tokio-events = "0.3.1"
 ```
 
 Define an event, create the bus, and publish!
@@ -58,6 +58,23 @@ async fn main() -> Result<()> {
 
 ---
 
+## Global Event Bus
+
+You can optionally initialize a globally accessible Event Bus, avoiding the need to pass an `Arc<EventBus>` through all your application layers.
+
+```rust
+use tokio_events::global::{set_global_bus, global_bus};
+
+let bus = EventBusBuilder::new().build().await?;
+set_global_bus(bus).expect("Failed to set global bus");
+
+// Anywhere else in your code:
+let bus = global_bus().expect("Bus not initialized");
+bus.publish(MyEvent { id: 1 }).await?;
+```
+
+---
+
 ## Feature Flags
 
 `tokio-events` uses feature flags to keep your binary size small. 
@@ -78,13 +95,13 @@ If your app crashes immediately after taking payment but before sending the `Ord
 
 Enable the feature:
 ```toml
-tokio-events = { version = "0.2.3", features = ["persistence"] }
+tokio-events = { version = "0.3.1", features = ["persistence"] }
 ```
 
 Initialize the bus with disk persistence:
 ```rust
 let bus = EventBusBuilder::new()
-    .with_redb_persistence("events.db")
+    .with_redb_path("events.db")
     // If the server crashes, un-ACK'd events are loaded from disk and replayed on boot!
     .build()
     .await?;
@@ -116,7 +133,7 @@ graph LR
 
 Enable the feature:
 ```toml
-tokio-events = { version = "0.2.3", features = ["remote"] }
+tokio-events = { version = "0.3.1", features = ["remote"] }
 ```
 
 Define the routing topic:
@@ -148,7 +165,7 @@ When 10 microservices share events over NATS, changing a JSON field name can cau
 
 Enable the feature:
 ```toml
-tokio-events = { version = "0.2.3", features = ["protobuf", "remote"] }
+tokio-events = { version = "0.3.1", features = ["protobuf", "remote"] }
 ```
 
 Tag your struct with `#[event(format = "protobuf")]`:

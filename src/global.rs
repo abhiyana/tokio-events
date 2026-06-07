@@ -28,7 +28,7 @@ pub fn set_global_bus(bus: EventBus) -> std::result::Result<(), EventBus> {
 ///
 /// # Returns
 ///
-/// Returns `Some(&EventBus)` if the global bus was previously initialized via 
+/// Returns `Some(&EventBus)` if the global bus was previously initialized via
 /// `set_global_bus`, otherwise returns `None`.
 pub fn get_bus() -> Option<&'static EventBus> {
     GLOBAL_BUS.get()

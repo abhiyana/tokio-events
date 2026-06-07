@@ -64,7 +64,7 @@ impl EventMetadata {
 
     /// Set a specific correlation ID.
     ///
-    /// Correlation IDs are used in distributed tracing to link a chain of events 
+    /// Correlation IDs are used in distributed tracing to link a chain of events
     /// together across multiple microservices. If this event is published as a reaction
     /// to an incoming event, they should share the same correlation ID.
     pub fn with_correlation(correlation_id: Uuid) -> Self {
@@ -81,7 +81,7 @@ impl EventMetadata {
 
     /// Set the causation ID.
     ///
-    /// The causation ID identifies the specific `event_id` of the parent event that 
+    /// The causation ID identifies the specific `event_id` of the parent event that
     /// triggered the creation of this current event.
     pub fn set_causation_id(mut self, id: Uuid) -> Self {
         self.causation_id = Some(id);
@@ -108,7 +108,7 @@ impl EventMetadata {
 
     /// Set the Session ID associated with this event.
     ///
-    /// Like `user_id`, this helps trace all events generated during a single 
+    /// Like `user_id`, this helps trace all events generated during a single
     /// active user session in your application.
     pub fn set_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
@@ -134,7 +134,7 @@ impl EventMetadata {
     /// Set a custom topic for Subject-Based routing.
     ///
     /// By default, events are routed based on their Rust type. If you use `bus.publish_to()`
-    /// or `metadata.with_topic()`, the event will only be delivered to handlers that 
+    /// or `metadata.with_topic()`, the event will only be delivered to handlers that
     /// explicitly subscribed to this topic string via `bus.subscribe_topic()`.
     pub fn with_topic(mut self, topic: impl Into<String>) -> Self {
         self.topic = Some(topic.into());
@@ -159,7 +159,7 @@ impl EventMetadata {
 
     /// Schedule the event to be delivered after a specific delay.
     ///
-    /// The event will be held in the dispatcher (or persistent storage, if enabled) 
+    /// The event will be held in the dispatcher (or persistent storage, if enabled)
     /// and will not be sent to subscribers until the `delay` duration has passed.
     pub fn delay(mut self, delay: std::time::Duration) -> Self {
         self.deliver_at = Some(Utc::now() + delay);

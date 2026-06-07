@@ -124,9 +124,9 @@ impl DispatcherConfig {
     /// This is the upper bound on the number of events that can sit in the dispatcher's
     /// memory queue waiting to be processed by worker threads.
     ///
-    /// - If this limit is reached and `drop_on_full` is `false`, the `bus.publish()` 
+    /// - If this limit is reached and `drop_on_full` is `false`, the `bus.publish()`
     ///   method will return an error (Backpressure).
-    /// - If this limit is reached and `drop_on_full` is `true`, older events or the 
+    /// - If this limit is reached and `drop_on_full` is `true`, older events or the
     ///   new event will be silently dropped.
     pub fn max_queue_size(mut self, size: usize) -> Self {
         self.max_queue_size = size;
@@ -136,7 +136,7 @@ impl DispatcherConfig {
     /// Set the number of concurrent worker threads.
     ///
     /// The dispatcher uses a dedicated thread pool to pop events off the queue
-    /// and route them to individual subscription channels. 
+    /// and route them to individual subscription channels.
     ///
     /// - `1`: Guarantees strict ordering of event dispatch across all subscriptions.
     /// - `> 1`: Greatly increases dispatch throughput, but ordering is no longer guaranteed.

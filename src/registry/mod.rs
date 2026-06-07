@@ -93,10 +93,7 @@ impl SubscriptionEntry {
     }
 
     /// Set a filter for evaluating events before queuing
-    pub fn with_filter(
-        mut self,
-        filter: EventFilterFn,
-    ) -> Self {
+    pub fn with_filter(mut self, filter: EventFilterFn) -> Self {
         self.filter = Some(filter);
         self
     }

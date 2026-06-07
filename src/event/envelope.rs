@@ -89,7 +89,7 @@ impl EventEnvelope {
     /// Create a new envelope from serialized raw bytes.
     ///
     /// This is an advanced method used exclusively by the persistence engine (`redb`)
-    /// and the distributed transport layer (`NATS`) to reconstruct an envelope from disk 
+    /// and the distributed transport layer (`NATS`) to reconstruct an envelope from disk
     /// or network without needing to know its concrete generic type `T` at runtime.
     pub fn from_serialized(
         type_id: TypeId,
@@ -134,8 +134,8 @@ impl EventEnvelope {
 
     /// Extract the concrete event payload from the envelope.
     ///
-    /// The envelope stores the event as a type-erased `Any` object (or as raw bytes 
-    /// if loaded from a persistent disk). This method safely attempts to downcast or 
+    /// The envelope stores the event as a type-erased `Any` object (or as raw bytes
+    /// if loaded from a persistent disk). This method safely attempts to downcast or
     /// deserialize the payload back into the requested concrete type `T`.
     ///
     /// # Examples
@@ -207,8 +207,8 @@ impl EventEnvelope {
 
     /// Get the correlation ID from metadata.
     ///
-    /// The correlation ID is used in distributed tracing to link a chain of events 
-    /// together across multiple microservices. If this event was published as a 
+    /// The correlation ID is used in distributed tracing to link a chain of events
+    /// together across multiple microservices. If this event was published as a
     /// reaction to another event, they should share the same correlation ID.
     ///
     /// # Returns
@@ -236,7 +236,7 @@ impl EventEnvelope {
     ///
     /// When you publish a new event as a direct result of processing this event,
     /// you should `chain()` them. This automatically carries over the `correlation_id`
-    /// (to keep them in the same distributed trace) and sets the `causation_id` 
+    /// (to keep them in the same distributed trace) and sets the `causation_id`
     /// of the new event to the `event_id` of this envelope.
     ///
     /// # Examples

@@ -122,7 +122,7 @@ impl EventBus {
 
     /// Publish an event with custom metadata.
     ///
-    /// This allows you to attach vital contextual information to the event envelope 
+    /// This allows you to attach vital contextual information to the event envelope
     /// before it enters the dispatcher. Metadata is incredibly powerful for injecting:
     /// - **Correlation IDs**: Linking multiple events in a single distributed trace.
     /// - **Causation IDs**: Tracking the parent event that triggered this child event.
@@ -244,7 +244,7 @@ impl EventBus {
 
     /// Subscribe a handler to events of a specific type.
     ///
-    /// The provided async closure will be invoked asynchronously in a dedicated worker task 
+    /// The provided async closure will be invoked asynchronously in a dedicated worker task
     /// for every published event that matches type `T`.
     ///
     /// # Examples
@@ -253,7 +253,7 @@ impl EventBus {
     /// let handle = bus.subscribe(|event: UserCreated| async move {
     ///     println!("User {} was created!", event.id);
     /// }).await?;
-    /// 
+    ///
     /// // The subscription remains active as long as the handle is not dropped
     /// // (unless you detach it).
     /// ```
@@ -281,7 +281,7 @@ impl EventBus {
 
     /// Subscribe a handler to events on a specific wildcard or literal topic.
     ///
-    /// This enables **Subject-Based Routing**. The handler will only execute if the 
+    /// This enables **Subject-Based Routing**. The handler will only execute if the
     /// event is both of type `T` AND published with a matching topic in its metadata.
     ///
     /// # Examples
@@ -318,8 +318,8 @@ impl EventBus {
 
     /// Send a request and wait for a response (Request-Reply Pattern).
     ///
-    /// This method automatically creates a temporary inbox subscription, attaches the inbox 
-    /// topic to the `EventMetadata::reply_to` field of the request, publishes the request, 
+    /// This method automatically creates a temporary inbox subscription, attaches the inbox
+    /// topic to the `EventMetadata::reply_to` field of the request, publishes the request,
     /// and asynchronously waits for a responder to send a response back.
     ///
     /// # Examples
@@ -383,8 +383,8 @@ impl EventBus {
 
     /// Register a responder for the Request-Reply (RPC) pattern.
     ///
-    /// The provided handler receives requests and returns a response. The event bus automatically 
-    /// packages the response and publishes it to the specific temporary inbox topic provided 
+    /// The provided handler receives requests and returns a response. The event bus automatically
+    /// packages the response and publishes it to the specific temporary inbox topic provided
     /// in the request's `reply_to` metadata.
     ///
     /// # Examples
@@ -421,7 +421,7 @@ impl EventBus {
     /// Subscribe to events with a handler that can return errors.
     ///
     /// If the async closure returns an `Err(_)`, the event bus will hold onto the event
-    /// and use its internal retry mechanism (respecting `max_retries` and `retry_backoff` 
+    /// and use its internal retry mechanism (respecting `max_retries` and `retry_backoff`
     /// configured in the builder). If it fails repeatedly, it is routed to the Dead Letter Queue.
     ///
     /// # Examples
@@ -453,8 +453,8 @@ impl EventBus {
     /// Subscribe using a custom struct that implements `EventHandler`.
     ///
     /// Unlike `subscribe()` which takes a closure, this takes a full struct implementation.
-    /// This is useful when your handler needs to maintain complex internal state, 
-    /// implement the `filter()` method to drop events instantly, or implement `on_shutdown()` 
+    /// This is useful when your handler needs to maintain complex internal state,
+    /// implement the `filter()` method to drop events instantly, or implement `on_shutdown()`
     /// to gracefully close database connections when the bus stops.
     ///
     /// # Examples
@@ -462,7 +462,7 @@ impl EventBus {
     /// ```rust,ignore
     /// struct MyHandler { db_pool: Pool }
     /// impl EventHandler for MyHandler { ... }
-    /// 
+    ///
     /// bus.subscribe_handler::<MyEvent, _>(MyHandler { db_pool }).await?;
     /// ```
     pub async fn subscribe_handler<T, H>(&self, handler: H) -> Result<SubscriptionHandle>
@@ -587,7 +587,7 @@ impl EventBus {
     ///
     /// This should be called manually *after* setting up all your `.subscribe(...)`
     /// routes. The dispatcher will scan the persistent database for orphaned events
-    /// that were saved but never dispatched before the last crash, and inject them 
+    /// that were saved but never dispatched before the last crash, and inject them
     /// into the memory queues of the currently active subscribers.
     ///
     /// If you do not use the `persistence` feature, this method does nothing.
@@ -596,7 +596,7 @@ impl EventBus {
     ///
     /// ```rust,ignore
     /// bus.subscribe(|evt: OrderPlaced| async move { ... }).await?;
-    /// 
+    ///
     /// // Now that subscribers are ready, process any missed events:
     /// bus.replay_pending().await?;
     /// ```

@@ -20,7 +20,7 @@ use uuid::Uuid;
 ///
 /// ```rust,ignore
 /// let handle = bus.subscribe(|event: MyEvent| async move { ... }).await?;
-/// 
+///
 /// // Keep the subscription alive forever:
 /// handle.detach();
 /// ```
@@ -92,9 +92,9 @@ impl SubscriptionHandle {
 
     /// Detach this subscription so it continues running in the background indefinitely.
     ///
-    /// By default, dropping a `SubscriptionHandle` automatically cancels the subscription 
-    /// and tears down the routing queues. Calling `.detach()` consumes the handle and 
-    /// explicitly prevents this automatic teardown, allowing the handler to run for the 
+    /// By default, dropping a `SubscriptionHandle` automatically cancels the subscription
+    /// and tears down the routing queues. Calling `.detach()` consumes the handle and
+    /// explicitly prevents this automatic teardown, allowing the handler to run for the
     /// entire lifetime of the `EventBus`.
     ///
     /// # Examples
@@ -104,8 +104,8 @@ impl SubscriptionHandle {
     /// handle.detach(); // The handler is now permanent
     /// ```
     pub fn detach(self) {
-        // By intentionally forgetting the handle, the `Arc` holding the `oneshot::Sender` 
-        // is leaked. This means the `Sender` is never dropped, and the background task 
+        // By intentionally forgetting the handle, the `Arc` holding the `oneshot::Sender`
+        // is leaked. This means the `Sender` is never dropped, and the background task
         // never receives a cancellation signal, effectively running forever.
         std::mem::forget(self);
     }

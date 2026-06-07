@@ -93,7 +93,7 @@ impl EventBusBuilder {
     /// ```rust,ignore
     /// let mut config = EventBusConfig::default();
     /// config.max_retries = 10;
-    /// 
+    ///
     /// let bus = EventBusBuilder::new()
     ///     .with_config(config)
     ///     .build()
@@ -106,7 +106,7 @@ impl EventBusBuilder {
 
     /// Set the scheduler tick rate for persistent scheduled events.
     ///
-    /// The event bus uses a background worker to poll the database for delayed or 
+    /// The event bus uses a background worker to poll the database for delayed or
     /// scheduled events whose delivery times have arrived. This configuration controls
     /// exactly how often that polling occurs.
     ///
@@ -147,7 +147,7 @@ impl EventBusBuilder {
     /// Use a custom `EventRegistry` implementation.
     ///
     /// By default, `tokio-events` uses an extremely fast `DashMapRegistry`. However,
-    /// if you are building a distributed system and need to coordinate active subscriptions 
+    /// if you are building a distributed system and need to coordinate active subscriptions
     /// across multiple nodes (e.g. via Redis or etcd), you can inject a custom registry here.
     ///
     /// # Examples
@@ -167,7 +167,7 @@ impl EventBusBuilder {
     /// Use a custom `EventDispatcher` implementation.
     ///
     /// The dispatcher is the core engine that routes events from publishers to subscribers.
-    /// The default `ChannelDispatcher` uses Tokio MPSC channels. You can provide a custom 
+    /// The default `ChannelDispatcher` uses Tokio MPSC channels. You can provide a custom
     /// dispatcher if you need highly specialized routing logic, such as consistent hashing,
     /// priority queues, or custom backpressure handling.
     ///
@@ -225,7 +225,7 @@ impl EventBusBuilder {
     /// Build with a high-throughput configuration profile.
     ///
     /// This preset prioritizes maximum event processing speed and concurrency over strict
-    /// durability. It is ideal for scenarios like metrics ingestion, logging, or non-critical 
+    /// durability. It is ideal for scenarios like metrics ingestion, logging, or non-critical
     /// telemetry where processing speed is more important than guaranteeing zero data loss.
     ///
     /// Under the hood, this configuration:
@@ -249,12 +249,12 @@ impl EventBusBuilder {
 
     /// Build with a reliable processing configuration profile.
     ///
-    /// This preset guarantees no event loss under heavy load, making it ideal for 
+    /// This preset guarantees no event loss under heavy load, making it ideal for
     /// financial transactions, order processing, and critical state machines.
     ///
     /// Under the hood, this configuration:
     /// - Forbids dropping events on full queues (`drop_on_full = false`).
-    /// - Enables disk persistence waits (`wait_for_persistence = true`). If persistence is enabled, 
+    /// - Enables disk persistence waits (`wait_for_persistence = true`). If persistence is enabled,
     ///   publish calls will block until the event is durably written to the physical hard drive.
     /// - Increases maximum retries to `5` with a `500ms` backoff.
     /// - Allocates a larger Dead Letter Queue (DLQ) channel size (`5000`).
@@ -295,7 +295,7 @@ impl EventBusBuilder {
 
     /// Set whether publish calls should wait for disk persistence.
     ///
-    /// If `true`, calling `bus.publish()` will block until the event is durably synced 
+    /// If `true`, calling `bus.publish()` will block until the event is durably synced
     /// to the physical disk (fsync). This provides the highest level of reliability but
     /// reduces publish throughput.
     ///
@@ -319,7 +319,7 @@ impl EventBusBuilder {
     /// Attach a custom handler for Dead Letter Queue (DLQ) events.
     ///
     /// This async closure will automatically be called for any event that permanently
-    /// fails all processing retries. This is typically used to move the failed event 
+    /// fails all processing retries. This is typically used to move the failed event
     /// to an external storage system or alert an operations team.
     ///
     /// # Examples
@@ -367,7 +367,7 @@ impl EventBusBuilder {
 
     /// Enable NATS JetStream for persistent distributed remote events.
     ///
-    /// This configures the bus to use JetStream, providing enterprise-grade **Exactly-Once** 
+    /// This configures the bus to use JetStream, providing enterprise-grade **Exactly-Once**
     /// or **At-Least-Once** distributed delivery. JetStream ensures that even if a microservice
     /// is offline, the NATS server will durably hold the events until the service comes back online.
     ///
@@ -382,8 +382,8 @@ impl EventBusBuilder {
     /// ```rust,ignore
     /// let bus = EventBusBuilder::new()
     ///     .with_nats_jetstream(
-    ///         "nats://localhost:4222", 
-    ///         "MY_APP_STREAM", 
+    ///         "nats://localhost:4222",
+    ///         "MY_APP_STREAM",
     ///         vec!["myapp.>".to_string()]
     ///     )
     ///     .build()
@@ -405,7 +405,7 @@ impl EventBusBuilder {
     /// Provide a custom remote transport implementation.
     ///
     /// This allows you to inject custom network routing logic. You can use this to implement
-    /// your own transports (e.g. RabbitMQ, Kafka, MQTT, or a custom TCP Mesh), or to inject 
+    /// your own transports (e.g. RabbitMQ, Kafka, MQTT, or a custom TCP Mesh), or to inject
     /// dummy transports during unit tests.
     #[cfg(feature = "remote")]
     pub fn with_custom_transport(

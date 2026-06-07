@@ -103,7 +103,7 @@ impl EventBusConfig {
     /// Enable or disable `tracing` span generation.
     ///
     /// If `true` (default), the event bus will emit detailed structured logs and spans
-    /// for every published and processed event using the `tracing` crate. This is 
+    /// for every published and processed event using the `tracing` crate. This is
     /// highly recommended for debugging but can be disabled for absolute maximum performance.
     pub fn enable_tracing(mut self, enable: bool) -> Self {
         self.enable_tracing = enable;
@@ -137,7 +137,7 @@ impl EventBusConfig {
     /// Set the per-handler channel buffer size.
     ///
     /// Each subscription gets its own Tokio MPSC channel from the dispatcher. This size
-    /// determines how many events can queue up for a single slow handler before backpressure 
+    /// determines how many events can queue up for a single slow handler before backpressure
     /// is applied to the dispatcher.
     ///
     /// - **Too small**: The dispatcher might block or drop events under sudden load spikes.

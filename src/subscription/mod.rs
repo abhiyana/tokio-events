@@ -120,8 +120,6 @@ impl SubscriptionManager {
         self.dlq_tx = Some(dlq_tx);
     }
 
-
-
     /// Get the DLQ sender if configured
     #[allow(dead_code)]
     pub(crate) fn dlq_tx(&self) -> Option<tokio::sync::mpsc::Sender<Arc<EventEnvelope>>> {

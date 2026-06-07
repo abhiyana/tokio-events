@@ -5,6 +5,15 @@ All notable changes to `tokio-events` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-06-07
+
+### Documentation
+- **Comprehensive API Docs**: Conducted a repository-wide sweep to ensure 100% of public APIs (`EventBus`, `EventEnvelope`, `EventMetadata`, `DispatcherConfig`) have detailed docstrings and `# Examples`.
+- **Advanced Patterns**: Documented RPC (Request-Reply), outbox network publishing, graceful shutdown paradigms, and backpressure configurations.
+- **Formatting**: Applied strict `cargo fmt` across the entire codebase.
+
+*Note: The OpenTelemetry Distributed Tracing feature is still in development on a separate branch and is NOT included in this release.*
+
 ## [0.3.1] - 2026-06-06
 
 ### Fixed

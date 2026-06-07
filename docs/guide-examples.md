@@ -90,8 +90,8 @@ sequenceDiagram
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-tokio-events = "0.3.1"
-tokio = { version = "1", features = ["full"] }
+tokio-events = "0.3.2"
+tokio = { version = "1.0", features = ["full", "time"] }
 ```
 
 ### Basic Example

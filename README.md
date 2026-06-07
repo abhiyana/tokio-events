@@ -21,7 +21,8 @@ A modern, type-safe, asynchronous event bus for Rust applications built on `toki
 Add the dependency to your `Cargo.toml`:
 ```toml
 [dependencies]
-tokio-events = "0.3.1"
+tokio-events = "0.3.2"
+tokio = { version = "1.0", features = ["full"] }
 ```
 
 Define an event, create the bus, and publish!
@@ -95,7 +96,9 @@ If your app crashes immediately after taking payment but before sending the `Ord
 
 Enable the feature:
 ```toml
-tokio-events = { version = "0.3.1", features = ["persistence"] }
+[dependencies]
+tokio-events = { version = "0.3.2", features = ["persistence"] }
+serde = { version = "1.0", features = ["derive"] }
 ```
 
 Initialize the bus with disk persistence:
@@ -133,7 +136,9 @@ graph LR
 
 Enable the feature:
 ```toml
-tokio-events = { version = "0.3.1", features = ["remote"] }
+[dependencies]
+tokio-events = { version = "0.3.2", features = ["remote"] }
+serde = { version = "1.0", features = ["derive"] }
 ```
 
 Define the routing topic:
@@ -165,7 +170,9 @@ When 10 microservices share events over NATS, changing a JSON field name can cau
 
 Enable the feature:
 ```toml
-tokio-events = { version = "0.3.1", features = ["protobuf", "remote"] }
+[dependencies]
+tokio-events = { version = "0.3.2", features = ["protobuf", "remote"] }
+prost = "0.12"
 ```
 
 Tag your struct with `#[event(format = "protobuf")]`:

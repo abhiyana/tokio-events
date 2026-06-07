@@ -95,23 +95,26 @@ impl EventBus {
         self.dlq_rx.lock().await.take()
     }
 
-    /// Publish an event to all subscribers.
+    /// Publish an event to the bus.
     ///
-    /// The event will be wrapped in an `EventEnvelope` with default metadata (including
-    /// a newly generated UUID for the event ID) and dispatched to all matching subscriptions.
+    /// This is the primary method for dispatching an event to all interested subscribers.
+    /// The event payload will automatically be wrapped in an `EventEnvelope` with a newly
+    /// generated unique `Uuid`.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `event` - The event payload to publish. Must implement the `Event` trait.
+    /// ```rust,ignore
+    /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event)]
+    /// struct UserCreated { id: u64 }
     ///
-    /// # Returns
-    ///
-    /// Returns the unique `Uuid` of the published event if successful.
+    /// let event_id = bus.publish(UserCreated { id: 101 }).await?;
+    /// println!("Published event with ID: {}", event_id);
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns an error if the event bus is currently shutting down, or if the
-    /// underlying dispatcher fails to accept the event.
+    /// Returns an error if the event bus is in the process of shutting down, or if the
+    /// underlying dispatcher fails to accept the event due to backpressure/full queues.
     pub async fn publish<T: Event>(&self, event: T) -> Result<Uuid> {
         self.publish_with_metadata(event, EventMetadata::new())
             .await
@@ -119,17 +122,22 @@ impl EventBus {
 
     /// Publish an event with custom metadata.
     ///
-    /// This allows attaching contextual information such as correlation IDs, causation IDs,
-    /// topics, or scheduling constraints to an event before dispatching it.
+    /// This allows you to attach vital contextual information to the event envelope 
+    /// before it enters the dispatcher. Metadata is incredibly powerful for injecting:
+    /// - **Correlation IDs**: Linking multiple events in a single distributed trace.
+    /// - **Causation IDs**: Tracking the parent event that triggered this child event.
+    /// - **Topics**: Subject-based routing.
+    /// - **Schedules**: Setting a delivery delay or exact execution time.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `event` - The event payload to publish. Must implement the `Event` trait.
-    /// * `metadata` - The `EventMetadata` to associate with this event.
+    /// ```rust,ignore
+    /// let metadata = EventMetadata::new()
+    ///     .with_correlation(user_session_id)
+    ///     .with_topic("orders.eu");
     ///
-    /// # Returns
-    ///
-    /// Returns the unique `Uuid` of the published event if successful.
+    /// bus.publish_with_metadata(OrderPlaced { ... }, metadata).await?;
+    /// ```
     ///
     /// # Errors
     ///
@@ -236,11 +244,19 @@ impl EventBus {
 
     /// Subscribe a handler to events of a specific type.
     ///
-    /// The provided async closure will be invoked for every published event that matches type `T`.
+    /// The provided async closure will be invoked asynchronously in a dedicated worker task 
+    /// for every published event that matches type `T`.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `handler` - An asynchronous closure or function that takes the event `T` and returns a `Future`.
+    /// ```rust,ignore
+    /// let handle = bus.subscribe(|event: UserCreated| async move {
+    ///     println!("User {} was created!", event.id);
+    /// }).await?;
+    /// 
+    /// // The subscription remains active as long as the handle is not dropped
+    /// // (unless you detach it).
+    /// ```
     ///
     /// # Returns
     ///
@@ -265,14 +281,22 @@ impl EventBus {
 
     /// Subscribe a handler to events on a specific wildcard or literal topic.
     ///
-    /// # Arguments
+    /// This enables **Subject-Based Routing**. The handler will only execute if the 
+    /// event is both of type `T` AND published with a matching topic in its metadata.
     ///
-    /// * `topic` - The topic string to match against published events.
-    /// * `handler` - The async closure to execute when an event arrives.
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Subscribes to exact topic
+    /// bus.subscribe_topic("orders.eu", |evt: OrderEvent| async move { ... }).await?;
+    ///
+    /// // Subscribes to all order regions (using wildcard syntax if supported by transport)
+    /// bus.subscribe_topic("orders.*", |evt: OrderEvent| async move { ... }).await?;
+    /// ```
     ///
     /// # Returns
     ///
-    /// Returns a `SubscriptionHandle`.
+    /// Returns a `SubscriptionHandle` governing this topic binding.
     pub async fn subscribe_topic<T, F, Fut>(
         &self,
         topic: &str,

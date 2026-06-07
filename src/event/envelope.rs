@@ -125,7 +125,23 @@ impl EventEnvelope {
         }
     }
 
-    /// Deserialize or downcast to the concrete event type
+    /// Extract the concrete event payload from the envelope.
+    ///
+    /// The envelope stores the event as a type-erased `Any` object (or as raw bytes 
+    /// if loaded from a persistent disk). This method safely attempts to downcast or 
+    /// deserialize the payload back into the requested concrete type `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let event: MyEvent = envelope.get_event::<MyEvent>()?;
+    /// println!("Extracted event: {:?}", event);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `T` does not match the actual type inside the envelope,
+    /// or if deserialization fails (when loading from disk).
     pub fn get_event<T: Event>(&self) -> crate::Result<T> {
         if self.type_id != TypeId::of::<T>() {
             return Err(crate::Error::EventNotRegistered {
@@ -182,12 +198,24 @@ impl EventEnvelope {
         self.type_id == TypeId::of::<T>()
     }
 
-    /// Get the correlation ID from metadata
+    /// Get the correlation ID from metadata.
+    ///
+    /// The correlation ID is used in distributed tracing to link a chain of events 
+    /// together across multiple microservices. If this event was published as a 
+    /// reaction to another event, they should share the same correlation ID.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Uuid)` if a correlation ID was attached, or `None`.
     pub fn correlation_id(&self) -> Option<uuid::Uuid> {
         self.metadata.correlation_id
     }
 
-    /// Get the event ID
+    /// Get the unique ID of this specific event occurrence.
+    ///
+    /// This is guaranteed to be a unique `Uuid` (v4). It is primarily used for
+    /// deduplication, exactly-once delivery semantics, and tracking specific events
+    /// in logs or tracing platforms.
     pub fn event_id(&self) -> uuid::Uuid {
         self.metadata.event_id
     }

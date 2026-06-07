@@ -84,6 +84,21 @@ impl EventBusBuilder {
     }
 
     /// Apply a custom `EventBusConfig` overriding all default settings.
+    ///
+    /// This allows you to construct a configuration object externally and apply it
+    /// at once, rather than using the fluent builder methods.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let mut config = EventBusConfig::default();
+    /// config.max_retries = 10;
+    /// 
+    /// let bus = EventBusBuilder::new()
+    ///     .with_config(config)
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn with_config(mut self, config: EventBusConfig) -> Self {
         self.config = config;
         self
@@ -100,7 +115,20 @@ impl EventBusBuilder {
     /// Configure the event bus using a closure.
     ///
     /// This is useful for modifying specific settings on the default configuration
-    /// without replacing the entire `EventBusConfig`.
+    /// without replacing the entire `EventBusConfig` object.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .configure(|mut cfg| {
+    ///         cfg.max_retries = 10;
+    ///         cfg.handler_channel_size = 500;
+    ///         cfg
+    ///     })
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn configure<F>(mut self, f: F) -> Self
     where
         F: FnOnce(EventBusConfig) -> EventBusConfig,
@@ -109,13 +137,42 @@ impl EventBusBuilder {
         self
     }
 
-    /// Use a custom registry implementation
+    /// Use a custom `EventRegistry` implementation.
+    ///
+    /// By default, `tokio-events` uses an extremely fast `DashMapRegistry`. However,
+    /// if you are building a distributed system and need to coordinate active subscriptions 
+    /// across multiple nodes (e.g. via Redis or etcd), you can inject a custom registry here.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let custom_reg = Arc::new(MyRedisRegistry::new());
+    /// let bus = EventBusBuilder::new()
+    ///     .registry(custom_reg)
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn registry(mut self, registry: Arc<dyn EventRegistry>) -> Self {
         self.registry = Some(registry);
         self
     }
 
-    /// Use a custom dispatcher implementation
+    /// Use a custom `EventDispatcher` implementation.
+    ///
+    /// The dispatcher is the core engine that routes events from publishers to subscribers.
+    /// The default `ChannelDispatcher` uses Tokio MPSC channels. You can provide a custom 
+    /// dispatcher if you need highly specialized routing logic, such as consistent hashing,
+    /// priority queues, or custom backpressure handling.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let my_dispatcher = CustomPriorityDispatcher::new();
+    /// let bus = EventBusBuilder::new()
+    ///     .custom_dispatcher(my_dispatcher)
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn custom_dispatcher<D>(mut self, dispatcher: D) -> Self
     where
         D: EventDispatcher + 'static,
@@ -131,8 +188,21 @@ impl EventBusBuilder {
         self
     }
 
-    /// Enable redb persistence by providing a file path
-    /// The database will be created automatically when `build()` is called.
+    /// Enable redb persistence by providing a file path.
+    ///
+    /// The database will be created automatically when `build()` is called. Enabling
+    /// persistence activates the Transactional Outbox pattern, ensuring that events
+    /// are durably stored on disk before being dispatched, preventing data loss
+    /// during unexpected application crashes.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .with_redb_path("./data/events.db")
+    ///     .build()
+    ///     .await?;
+    /// ```
     #[cfg(feature = "persistence")]
     pub fn with_redb_path(mut self, path: impl AsRef<std::path::Path>) -> Self {
         self.redb_path = Some(path.as_ref().to_path_buf());
@@ -210,15 +280,45 @@ impl EventBusBuilder {
         self.with_config(EventBusConfig::ordered())
     }
 
-    /// Set whether publish should wait for disk persistence
+    /// Set whether publish calls should wait for disk persistence.
+    ///
+    /// If `true`, calling `bus.publish()` will block until the event is durably synced 
+    /// to the physical disk (fsync). This provides the highest level of reliability but
+    /// reduces publish throughput.
+    ///
+    /// If `false` (default), `bus.publish()` will return as soon as the event is written
+    /// to the memory queue, while a background task syncs it to disk.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .with_redb_path("events.db")
+    ///     .wait_for_persistence(true) // Maximize safety
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn wait_for_persistence(mut self, wait: bool) -> Self {
         self.config.wait_for_persistence = wait;
         self
     }
 
     /// Attach a custom handler for Dead Letter Queue (DLQ) events.
-    /// This closure will automatically be called for any event that permanently
-    /// fails all retries.
+    ///
+    /// This async closure will automatically be called for any event that permanently
+    /// fails all processing retries. This is typically used to move the failed event 
+    /// to an external storage system or alert an operations team.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .with_dlq_handler(|failed_event| async move {
+    ///         println!("Event {} permanently failed!", failed_event.event_id());
+    ///     })
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn with_dlq_handler<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(Arc<EventEnvelope>) -> Fut + Send + Sync + 'static,

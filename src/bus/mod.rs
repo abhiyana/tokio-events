@@ -307,6 +307,18 @@ impl EventBus {
     /// bus.subscribe_topic("orders.*", |evt: OrderEvent| async move { ... }).await?;
     /// ```
     ///
+    /// # CRITICAL: Handle Lifecycle
+    ///
+    /// The `subscribe_topic` method returns a `SubscriptionHandle`. If you do **not** assign this 
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// at the end of the statement, immediately cancelling your subscription.
+    ///
+    /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe_topic("topic", |e: MyEvent| async move { ... }).await?.detach();
+    /// ```
+    ///
     /// # Returns
     ///
     /// Returns a `SubscriptionHandle` governing this topic binding.
@@ -408,6 +420,18 @@ impl EventBus {
     ///     UserFetched { name: user_name }
     /// }).await?;
     /// ```
+    ///
+    /// # CRITICAL: Handle Lifecycle
+    ///
+    /// The `respond` method returns a `SubscriptionHandle`. If you do **not** assign this 
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// at the end of the statement, immediately cancelling your responder.
+    ///
+    /// If you want the responder to run permanently in the background, you **MUST** chain `.detach()`:
+    ///
+    /// ```rust,ignore
+    /// bus.respond(|req: FetchUser| async move { ... }).await?.detach();
+    /// ```
     pub async fn respond<Req, Res, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
     where
         Req: Event,
@@ -447,6 +471,18 @@ impl EventBus {
     ///     Ok(())
     /// }).await?;
     /// ```
+    ///
+    /// # CRITICAL: Handle Lifecycle
+    ///
+    /// The `subscribe_fallible` method returns a `SubscriptionHandle`. If you do **not** assign this 
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// at the end of the statement, immediately cancelling your subscription.
+    ///
+    /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe_fallible(|e: MyEvent| async move { ... }).await?.detach();
+    /// ```
     pub async fn subscribe_fallible<T, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -478,6 +514,18 @@ impl EventBus {
     ///
     /// bus.subscribe_handler::<MyEvent, _>(MyHandler { db_pool }).await?;
     /// ```
+    ///
+    /// # CRITICAL: Handle Lifecycle
+    ///
+    /// The `subscribe_handler` method returns a `SubscriptionHandle`. If you do **not** assign this 
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// at the end of the statement, immediately cancelling your subscription.
+    ///
+    /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe_handler::<MyEvent, _>(handler).await?.detach();
+    /// ```
     pub async fn subscribe_handler<T, H>(&self, handler: H) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -503,6 +551,18 @@ impl EventBus {
     /// bus.subscribe_remote("inventory_service", |event: OrderPlaced| async move {
     ///     println!("Order received from network: {}", event.id);
     /// }).await?;
+    /// ```
+    ///
+    /// # CRITICAL: Handle Lifecycle
+    ///
+    /// The `subscribe_remote` method returns a `SubscriptionHandle`. If you do **not** assign this 
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// at the end of the statement, immediately cancelling your subscription.
+    ///
+    /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe_remote("group", |e: MyEvent| async move { ... }).await?.detach();
     /// ```
     #[cfg(feature = "remote")]
     #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]

@@ -69,13 +69,20 @@ impl EventBusConfig {
         Self::default()
     }
 
-    /// Set maximum retry attempts
+    /// Set the maximum number of retry attempts for failed handlers.
+    ///
+    /// If an event handler returns an `Err(_)`, the event bus will wait for the
+    /// `retry_backoff` duration and attempt to execute the handler again.
+    /// Once this limit is reached, the event is permanently sent to the Dead Letter Queue.
     pub fn max_retries(mut self, retries: u32) -> Self {
         self.max_retries = retries;
         self
     }
 
-    /// Set retry backoff duration
+    /// Set the fixed retry backoff duration.
+    ///
+    /// This is the exact amount of time the dispatcher will wait between retry
+    /// attempts for a failed event handler.
     pub fn retry_backoff(mut self, backoff: Duration) -> Self {
         self.retry_backoff = backoff;
         self
@@ -102,13 +109,24 @@ impl EventBusConfig {
         self
     }
 
-    /// Set per-handler channel buffer size
+    /// Set the per-handler channel buffer size.
+    ///
+    /// Each subscription gets its own Tokio MPSC channel from the dispatcher. This size
+    /// determines how many events can queue up for a single slow handler before backpressure 
+    /// is applied to the dispatcher.
+    ///
+    /// - **Too small**: The dispatcher might block or drop events under sudden load spikes.
+    /// - **Too large**: Wastes memory if you have thousands of subscriptions.
     pub fn handler_channel_size(mut self, size: usize) -> Self {
         self.handler_channel_size = size;
         self
     }
 
-    /// Set DLQ channel buffer size
+    /// Set the Dead Letter Queue (DLQ) channel buffer size.
+    ///
+    /// Controls how many permanently failed events can buffer in the DLQ channel
+    /// before backpressure cascades back into the main retry loop. If you expect
+    /// heavy failure rates and use a slow DLQ handler, increase this value.
     pub fn dlq_channel_size(mut self, size: usize) -> Self {
         self.dlq_channel_size = size;
         self

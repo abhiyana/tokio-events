@@ -40,12 +40,28 @@ pub trait EventHandler: Send + Sync + 'static {
     ///
     /// The event bus will call this filter synchronously during dispatch.
     /// If the filter returns `false`, the event is dropped instantly without
-    /// ever consuming channel capacity.
+    /// ever consuming MPSC channel capacity. This is highly efficient for ignoring
+    /// massive streams of data that you don't care about.
     ///
     /// # Returns
     ///
-    /// Returns `Some(closure)` if filtering is enabled, or `None` if the handler
+    /// Returns `Some(closure)` if filtering is enabled, or `None` (default) if the handler
     /// accepts all events it is registered for.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// impl EventHandler for MyHighVolumeHandler {
+    ///     fn filter(&self) -> Option<EventFilterFn> {
+    ///         Some(Arc::new(|env| {
+    ///             // Instantly drop any event that doesn't have our specific user ID
+    ///             env.correlation_id() == Some(my_target_uuid)
+    ///         }))
+    ///     }
+    ///     
+    ///     async fn handle(&self, envelope: &EventEnvelope) -> Result<()> { ... }
+    /// }
+    /// ```
     fn filter(&self) -> Option<EventFilterFn> {
         None
     }

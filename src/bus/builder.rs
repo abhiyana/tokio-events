@@ -105,8 +105,15 @@ impl EventBusBuilder {
     }
 
     /// Set the scheduler tick rate for persistent scheduled events.
-    /// This controls how often the database is polled for delayed events.
-    /// Default is 1 second.
+    ///
+    /// The event bus uses a background worker to poll the database for delayed or 
+    /// scheduled events whose delivery times have arrived. This configuration controls
+    /// exactly how often that polling occurs.
+    ///
+    /// - **Higher tick rate (e.g. 100ms)**: Better precision for event dispatch, but consumes more CPU and I/O.
+    /// - **Lower tick rate (e.g. 5s)**: Lower overhead, but scheduled events may be dispatched up to 5 seconds late.
+    ///
+    /// Default is `1 second`.
     pub fn with_scheduler_tick_rate(mut self, rate: std::time::Duration) -> Self {
         self.config.scheduler_tick_rate = rate;
         self
@@ -181,7 +188,13 @@ impl EventBusBuilder {
         self
     }
 
-    /// Enable redb persistence for the event bus using an existing Database instance
+    /// Enable redb persistence for the event bus using an existing `Database` instance.
+    ///
+    /// If your application already manages a `redb::Database` for its own business logic,
+    /// you can share that instance with the `EventBus`. The bus will automatically create
+    /// and manage its own tables within the shared database.
+    ///
+    /// This enables the Transactional Outbox pattern without requiring a secondary database file.
     #[cfg(feature = "persistence")]
     pub fn with_redb(mut self, db: Arc<redb::Database>) -> Self {
         self.redb = Some(db);
@@ -328,7 +341,22 @@ impl EventBusBuilder {
         self
     }
 
-    /// Enable NATS transport for distributed remote events (Core NATS / Fire-and-Forget)
+    /// Enable Core NATS transport for distributed remote events.
+    ///
+    /// This attaches the event bus to a NATS cluster using standard "fire-and-forget" semantics.
+    /// Any events published to the local bus will be seamlessly routed over the network to other
+    /// microservices listening on the same NATS topics.
+    ///
+    /// *Note: Core NATS provides At-Most-Once delivery. For persistent Exactly-Once delivery, use `with_nats_jetstream`.*
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .with_nats_transport("nats://localhost:4222")
+    ///     .build()
+    ///     .await?;
+    /// ```
     #[cfg(feature = "remote")]
     pub fn with_nats_transport(mut self, url: impl Into<String>) -> Self {
         self.nats_url = Some(url.into());
@@ -337,7 +365,30 @@ impl EventBusBuilder {
         self
     }
 
-    /// Enable NATS JetStream for persistent distributed remote events (Guaranteed Exactly-Once)
+    /// Enable NATS JetStream for persistent distributed remote events.
+    ///
+    /// This configures the bus to use JetStream, providing enterprise-grade **Exactly-Once** 
+    /// or **At-Least-Once** distributed delivery. JetStream ensures that even if a microservice
+    /// is offline, the NATS server will durably hold the events until the service comes back online.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The NATS cluster URL (e.g., `"nats://localhost:4222"`).
+    /// * `stream_name` - The globally unique JetStream Stream name.
+    /// * `subjects` - A list of wildcard topics (e.g., `vec!["events.*".to_string()]`) that this stream binds to.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .with_nats_jetstream(
+    ///         "nats://localhost:4222", 
+    ///         "MY_APP_STREAM", 
+    ///         vec!["myapp.>".to_string()]
+    ///     )
+    ///     .build()
+    ///     .await?;
+    /// ```
     #[cfg(feature = "remote")]
     pub fn with_nats_jetstream(
         mut self,
@@ -351,7 +402,11 @@ impl EventBusBuilder {
         self
     }
 
-    /// Provide a custom remote transport implementation (e.g. for testing)
+    /// Provide a custom remote transport implementation.
+    ///
+    /// This allows you to inject custom network routing logic. You can use this to implement
+    /// your own transports (e.g. RabbitMQ, Kafka, MQTT, or a custom TCP Mesh), or to inject 
+    /// dummy transports during unit tests.
     #[cfg(feature = "remote")]
     pub fn with_custom_transport(
         mut self,

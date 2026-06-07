@@ -12,8 +12,18 @@ use uuid::Uuid;
 /// When the handle is dropped (or explicitly unsubscribed), the event bus will
 /// clean up the routing channels and stop delivering events to the associated handler.
 ///
-/// **Note**: Dropping this handle acts as an implicit unsubscription unless
-/// configured otherwise during subscription creation.
+/// **CRITICAL**: If you do not store this handle, the subscription will be instantly
+/// dropped and cancelled. If you want a subscription to run forever in the background,
+/// you MUST call `.detach()`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let handle = bus.subscribe(|event: MyEvent| async move { ... }).await?;
+/// 
+/// // Keep the subscription alive forever:
+/// handle.detach();
+/// ```
 #[derive(Clone)]
 pub struct SubscriptionHandle {
     /// Unique ID for this subscription
@@ -75,9 +85,29 @@ impl SubscriptionHandle {
         Ok(())
     }
 
-    /// Check if this subscription is still active
+    /// Check if this subscription is still active.
     pub async fn is_active(&self) -> bool {
         self.unsubscribe_sender.lock().await.is_some()
+    }
+
+    /// Detach this subscription so it continues running in the background indefinitely.
+    ///
+    /// By default, dropping a `SubscriptionHandle` automatically cancels the subscription 
+    /// and tears down the routing queues. Calling `.detach()` consumes the handle and 
+    /// explicitly prevents this automatic teardown, allowing the handler to run for the 
+    /// entire lifetime of the `EventBus`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let handle = bus.subscribe(|event: MyEvent| async move { ... }).await?;
+    /// handle.detach(); // The handler is now permanent
+    /// ```
+    pub fn detach(self) {
+        // By intentionally forgetting the handle, the `Arc` holding the `oneshot::Sender` 
+        // is leaked. This means the `Sender` is never dropped, and the background task 
+        // never receives a cancellation signal, effectively running forever.
+        std::mem::forget(self);
     }
 }
 

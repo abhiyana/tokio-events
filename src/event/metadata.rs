@@ -62,7 +62,11 @@ impl EventMetadata {
         }
     }
 
-    /// Create metadata with a specific correlation ID
+    /// Set a specific correlation ID.
+    ///
+    /// Correlation IDs are used in distributed tracing to link a chain of events 
+    /// together across multiple microservices. If this event is published as a reaction
+    /// to an incoming event, they should share the same correlation ID.
     pub fn with_correlation(correlation_id: Uuid) -> Self {
         let mut metadata = Self::new();
         metadata.correlation_id = Some(correlation_id);
@@ -105,7 +109,11 @@ impl EventMetadata {
         self
     }
 
-    /// Set a custom topic for Subject-Based routing
+    /// Set a custom topic for Subject-Based routing.
+    ///
+    /// By default, events are routed based on their Rust type. If you use `bus.publish_to()`
+    /// or `metadata.with_topic()`, the event will only be delivered to handlers that 
+    /// explicitly subscribed to this topic string via `bus.subscribe_topic()`.
     pub fn with_topic(mut self, topic: impl Into<String>) -> Self {
         self.topic = Some(topic.into());
         self
@@ -118,28 +126,21 @@ impl EventMetadata {
     }
 
     /// Schedule this event to be delivered at an exact future time.
+    /// Schedule the event to be delivered at an exact future time.
     ///
-    /// Requires the event bus to be configured with the `persistence` feature and an
-    /// active `RedbDispatcher` to survive process restarts.
-    ///
-    /// # Arguments
-    ///
-    /// * `time` - The exact UTC `DateTime` to dispatch the event.
+    /// The event will be held in the dispatcher (or persistent storage, if enabled)
+    /// and will not be dispatched until the specified UTC timestamp.
     pub fn schedule_at(mut self, time: DateTime<Utc>) -> Self {
         self.deliver_at = Some(time);
         self
     }
 
-    /// Delay this event from being delivered for a specific duration.
+    /// Schedule the event to be delivered after a specific delay.
     ///
-    /// Requires the event bus to be configured with the `persistence` feature to
-    /// survive process restarts.
-    ///
-    /// # Arguments
-    ///
-    /// * `duration` - The `Duration` to wait before dispatching the event.
-    pub fn delay(mut self, duration: std::time::Duration) -> Self {
-        self.deliver_at = Some(Utc::now() + duration);
+    /// The event will be held in the dispatcher (or persistent storage, if enabled) 
+    /// and will not be sent to subscribers until the `delay` duration has passed.
+    pub fn delay(mut self, delay: std::time::Duration) -> Self {
+        self.deliver_at = Some(Utc::now() + delay);
         self
     }
 

@@ -8,21 +8,44 @@ use std::sync::OnceLock;
 
 static GLOBAL_BUS: OnceLock<EventBus> = OnceLock::new();
 
-/// Sets the global event bus instance.
+/// Sets the global singleton event bus instance.
 ///
-/// This function can only be called once. Subsequent calls will return an error
-/// containing the `EventBus` that was passed in.
+/// This function should typically be called once during application startup.
+/// Subsequent calls will return an error containing the `EventBus` that was passed in.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let bus = EventBusBuilder::new().build().await?;
+/// tokio_events::global::set_global_bus(bus).expect("Bus already initialized");
+/// ```
 #[allow(clippy::result_large_err)]
 pub fn set_global_bus(bus: EventBus) -> std::result::Result<(), EventBus> {
     GLOBAL_BUS.set(bus)
 }
 
-/// Gets a reference to the global event bus, if it has been initialized.
+/// Gets a reference to the global event bus.
+///
+/// # Returns
+///
+/// Returns `Some(&EventBus)` if the global bus was previously initialized via 
+/// `set_global_bus`, otherwise returns `None`.
 pub fn get_bus() -> Option<&'static EventBus> {
     GLOBAL_BUS.get()
 }
 
-/// Publishes an event to the global event bus.
+/// Publishes an event to the globally registered event bus.
+///
+/// This is a highly convenient wrapper around `get_bus().unwrap().publish()`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Anywhere in your application, without needing an Arc<EventBus>:
+/// tokio_events::global::publish(UserCreated { id: 1 }).await?;
+/// ```
+///
+/// # Errors
 ///
 /// Returns an error if the global event bus has not been initialized via `set_global_bus`.
 pub async fn publish<E: Event>(event: E) -> Result<uuid::Uuid> {

@@ -258,10 +258,23 @@ impl EventBus {
     /// // (unless you detach it).
     /// ```
     ///
+    /// # CRITICAL: Handle Lifecycle
+    ///
+    /// The `subscribe` method returns a `SubscriptionHandle`. If you do **not** assign this 
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// at the end of the statement, immediately cancelling your subscription before it can process 
+    /// any events.
+    ///
+    /// If you want a subscription to run permanently in the background without needing to store 
+    /// the handle, you **MUST** chain `.detach()`:
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe(|e: MyEvent| async move { ... }).await?.detach();
+    /// ```
+    ///
     /// # Returns
     ///
     /// Returns a `SubscriptionHandle` that manages the lifecycle of the subscription.
-    /// Dropping the handle may automatically unsubscribe, depending on its configuration.
     ///
     /// # Errors
     ///

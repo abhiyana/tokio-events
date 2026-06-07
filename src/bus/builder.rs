@@ -141,18 +141,71 @@ impl EventBusBuilder {
 
     /// Build with a high-throughput configuration profile.
     ///
-    /// This preset prioritizes performance over strict durability by increasing
-    /// buffer sizes and worker counts.
+    /// This preset prioritizes maximum event processing speed and concurrency over strict
+    /// durability. It is ideal for scenarios like metrics ingestion, logging, or non-critical 
+    /// telemetry where processing speed is more important than guaranteeing zero data loss.
+    ///
+    /// Under the hood, this configuration:
+    /// - Increases the internal maximum queue size to `50,000`.
+    /// - Sets worker threads to double the available CPU cores for maximum parallelism.
+    /// - Allows events to be silently dropped if the queue becomes completely full (`drop_on_full = true`).
+    /// - Limits retries to `1` (fail fast).
+    /// - Disables waiting for disk persistence.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .high_throughput()
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn high_throughput(self) -> Self {
         self.with_config(EventBusConfig::high_throughput())
     }
 
-    /// Build with reliable processing configuration
+    /// Build with a reliable processing configuration profile.
+    ///
+    /// This preset guarantees no event loss under heavy load, making it ideal for 
+    /// financial transactions, order processing, and critical state machines.
+    ///
+    /// Under the hood, this configuration:
+    /// - Forbids dropping events on full queues (`drop_on_full = false`).
+    /// - Enables disk persistence waits (`wait_for_persistence = true`). If persistence is enabled, 
+    ///   publish calls will block until the event is durably written to the physical hard drive.
+    /// - Increases maximum retries to `5` with a `500ms` backoff.
+    /// - Allocates a larger Dead Letter Queue (DLQ) channel size (`5000`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .reliable()
+    ///     .with_redb_path("critical_events.db")
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn reliable(self) -> Self {
         self.with_config(EventBusConfig::reliable())
     }
 
-    /// Build with ordered processing configuration
+    /// Build with a strict ordered processing configuration profile.
+    ///
+    /// This preset guarantees that events are processed strictly in the exact order
+    /// they are published, preventing race conditions in dependent state updates.
+    ///
+    /// Under the hood, this configuration:
+    /// - Limits the internal dispatcher to a **single worker thread** (`worker_threads = 1`).
+    /// - Forbids dropping events (`drop_on_full = false`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let bus = EventBusBuilder::new()
+    ///     .ordered()
+    ///     .build()
+    ///     .await?;
+    /// ```
     pub fn ordered(self) -> Self {
         self.with_config(EventBusConfig::ordered())
     }

@@ -63,7 +63,10 @@ impl EventEnvelope {
         self.payload_bytes.as_deref()
     }
 
-    /// Create a new envelope with custom metadata and priority
+    /// Create a new envelope with custom metadata and a calculated priority.
+    ///
+    /// This constructor is automatically used if your event type implements the
+    /// `HasPriority` trait.
     pub fn with_priority<T: Event + HasPriority>(event: T, metadata: EventMetadata) -> Self {
         let priority = event.priority();
 
@@ -83,7 +86,11 @@ impl EventEnvelope {
         }
     }
 
-    /// Create a new envelope from serialized bytes (loaded from disk)
+    /// Create a new envelope from serialized raw bytes.
+    ///
+    /// This is an advanced method used exclusively by the persistence engine (`redb`)
+    /// and the distributed transport layer (`NATS`) to reconstruct an envelope from disk 
+    /// or network without needing to know its concrete generic type `T` at runtime.
     pub fn from_serialized(
         type_id: TypeId,
         type_name: String,
@@ -225,7 +232,21 @@ impl EventEnvelope {
         self.payload.clone()
     }
 
-    /// Create a new envelope that chains from this one
+    /// Create a new envelope that chains from this one (Causality).
+    ///
+    /// When you publish a new event as a direct result of processing this event,
+    /// you should `chain()` them. This automatically carries over the `correlation_id`
+    /// (to keep them in the same distributed trace) and sets the `causation_id` 
+    /// of the new event to the `event_id` of this envelope.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Inside an event handler for `OrderPlaced`:
+    /// let next_event = PaymentProcessed { ... };
+    /// let chained_envelope = incoming_envelope.chain(next_event);
+    /// bus.publish_envelope(chained_envelope).await?;
+    /// ```
     pub fn chain<T: Event>(&self, event: T) -> Self {
         let mut metadata = EventMetadata::new();
         metadata.chain_from(&self.metadata);
@@ -290,19 +311,28 @@ impl<T: Event> EnvelopeBuilder<T> {
         self
     }
 
-    /// Set causation ID
+    /// Set the causation ID.
+    ///
+    /// The causation ID is the `event_id` of the parent event that triggered the creation
+    /// of this event. This is useful for auditing and debugging causality chains.
     pub fn causation_id(mut self, id: uuid::Uuid) -> Self {
         self.metadata.causation_id = Some(id);
         self
     }
 
-    /// Set event source
+    /// Set the event source.
+    ///
+    /// Identifies the service, domain, or component that produced this event.
+    /// Useful for routing and debugging in large microservice architectures.
     pub fn source(mut self, source: impl Into<String>) -> Self {
         self.metadata.source = Some(source.into());
         self
     }
 
-    /// Set priority
+    /// Set the event priority.
+    ///
+    /// In highly congested systems, High priority events may bypass standard queues
+    /// or be selected first by custom dispatchers.
     pub fn priority(mut self, priority: EventPriority) -> Self {
         self.priority = Some(priority);
         self

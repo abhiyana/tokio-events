@@ -119,31 +119,58 @@ impl DispatcherConfig {
         Self::default()
     }
 
-    /// Set the maximum queue size
+    /// Set the absolute maximum queue size for the dispatcher.
+    ///
+    /// This is the upper bound on the number of events that can sit in the dispatcher's
+    /// memory queue waiting to be processed by worker threads.
+    ///
+    /// - If this limit is reached and `drop_on_full` is `false`, the `bus.publish()` 
+    ///   method will return an error (Backpressure).
+    /// - If this limit is reached and `drop_on_full` is `true`, older events or the 
+    ///   new event will be silently dropped.
     pub fn max_queue_size(mut self, size: usize) -> Self {
         self.max_queue_size = size;
         self
     }
 
-    /// Set the number of worker threads
+    /// Set the number of concurrent worker threads.
+    ///
+    /// The dispatcher uses a dedicated thread pool to pop events off the queue
+    /// and route them to individual subscription channels. 
+    ///
+    /// - `1`: Guarantees strict ordering of event dispatch across all subscriptions.
+    /// - `> 1`: Greatly increases dispatch throughput, but ordering is no longer guaranteed.
+    ///
+    /// Default is `num_cpus::get()`.
     pub fn worker_threads(mut self, threads: usize) -> Self {
         self.worker_threads = threads;
         self
     }
 
-    /// Set whether to drop events when queue is full
+    /// Set the load-shedding behavior when the queue is full.
+    ///
+    /// - If `true`: Under extreme load, the dispatcher will intentionally drop new events
+    ///   instead of blocking or erroring. This keeps the system highly available at the cost
+    ///   of data loss. (Useful for metrics/sensor data).
+    /// - If `false` (default): Rejects new events when the queue is full, ensuring no silent data loss.
     pub fn drop_on_full(mut self, drop: bool) -> Self {
         self.drop_on_full = drop;
         self
     }
 
-    /// Set the processing timeout
+    /// Set the maximum allowed time for an event handler to process an event.
+    ///
+    /// If an asynchronous event handler takes longer than this timeout to yield or complete,
+    /// the dispatcher will log a warning or potentially cancel the future.
     pub fn processing_timeout_ms(mut self, timeout: u64) -> Self {
         self.processing_timeout_ms = timeout;
         self
     }
 
-    /// Enable or disable metrics
+    /// Enable or disable performance metrics collection.
+    ///
+    /// When enabled (default), the dispatcher records metrics like `tokio_events_published_total`
+    /// and internal queue depth gauges using the `metrics` crate.
     pub fn enable_metrics(mut self, enable: bool) -> Self {
         self.enable_metrics = enable;
         self

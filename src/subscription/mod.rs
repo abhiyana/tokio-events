@@ -72,7 +72,11 @@ impl SubscriptionManager {
         Self::with_channel_size(registry, max_retries, retry_backoff, 256)
     }
 
-    /// Create a new subscription manager with custom handler channel size
+    /// Create a new subscription manager with a custom handler channel size.
+    ///
+    /// The `handler_channel_size` defines the capacity of the MPSC channel used to
+    /// buffer events for each individual subscription before backpressure is applied
+    /// to the dispatcher.
     pub fn with_channel_size(
         registry: Arc<dyn EventRegistry>,
         max_retries: u32,
@@ -107,7 +111,11 @@ impl SubscriptionManager {
         }
     }
 
-    /// Set the Dead Letter Queue (DLQ) sender
+    /// Set the Dead Letter Queue (DLQ) sender channel.
+    ///
+    /// When an event handler fails repeatedly and exceeds the maximum retry count,
+    /// the event is packaged into an `EventEnvelope` and sent to this channel to prevent
+    /// data loss, allowing external systems to inspect and recover poisoned events.
     pub fn set_dlq(&mut self, dlq_tx: tokio::sync::mpsc::Sender<Arc<EventEnvelope>>) {
         self.dlq_tx = Some(dlq_tx);
     }

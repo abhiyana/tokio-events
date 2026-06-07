@@ -79,31 +79,53 @@ impl EventMetadata {
         self
     }
 
-    /// Set the causation ID (the event that caused this one)
+    /// Set the causation ID.
+    ///
+    /// The causation ID identifies the specific `event_id` of the parent event that 
+    /// triggered the creation of this current event.
     pub fn set_causation_id(mut self, id: Uuid) -> Self {
         self.causation_id = Some(id);
         self
     }
 
-    /// Set the event source
+    /// Set the event source.
+    ///
+    /// Identifies the service, domain, or component that produced this event.
+    /// Useful for routing and debugging in large microservice architectures.
     pub fn set_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
         self
     }
 
-    /// Set the user ID
+    /// Set the User ID associated with this event.
+    ///
+    /// This is highly useful for auditing and analytics, allowing you to trace
+    /// all events triggered directly or indirectly by a specific user.
     pub fn set_user_id(mut self, user_id: impl Into<String>) -> Self {
         self.user_id = Some(user_id.into());
         self
     }
 
-    /// Set the session ID
+    /// Set the Session ID associated with this event.
+    ///
+    /// Like `user_id`, this helps trace all events generated during a single 
+    /// active user session in your application.
     pub fn set_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
     }
 
-    /// Add a custom metadata field
+    /// Add a custom metadata field.
+    ///
+    /// This allows you to attach any arbitrary string-based key-value pairs to the event.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let metadata = EventMetadata::new()
+    ///     .with_custom("tenant_id", "acme-corp")
+    ///     .with_custom("region", "eu-west-1");
+    /// ```
     pub fn with_custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.custom.insert(key.into(), value.into());
         self

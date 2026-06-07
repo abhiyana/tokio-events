@@ -316,19 +316,19 @@ impl EventBus {
             .await
     }
 
-    /// Perform a Request-Reply (RPC) call over the event bus.
+    /// Send a request and wait for a response (Request-Reply Pattern).
     ///
-    /// This method generates an ephemeral inbox topic, subscribes to it, publishes the provided
-    /// request event with a `reply_to` metadata field pointing to the inbox, and awaits exactly
-    /// one response event before automatically tearing down the ephemeral subscription.
+    /// This method automatically creates a temporary inbox subscription, attaches the inbox 
+    /// topic to the `EventMetadata::reply_to` field of the request, publishes the request, 
+    /// and asynchronously waits for a responder to send a response back.
     ///
-    /// # Arguments
+    /// # Examples
     ///
-    /// * `request` - The event payload serving as the request.
-    ///
-    /// # Returns
-    ///
-    /// Returns the response event of type `Res`.
+    /// ```rust,ignore
+    /// let request = FetchUser { id: 1 };
+    /// let response: UserFetched = bus.request(request).await?;
+    /// println!("Got user: {}", response.name);
+    /// ```
     ///
     /// # Errors
     ///
@@ -381,10 +381,20 @@ impl EventBus {
         response
     }
 
-    /// Register a responder for Request-Reply (RPC) pattern
+    /// Register a responder for the Request-Reply (RPC) pattern.
     ///
-    /// The handler receives requests and returns a response, which is automatically published
-    /// to the request's `reply_to` topic.
+    /// The provided handler receives requests and returns a response. The event bus automatically 
+    /// packages the response and publishes it to the specific temporary inbox topic provided 
+    /// in the request's `reply_to` metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// bus.respond(|req: FetchUser| async move {
+    ///     let user_name = db.get_user(req.id).await;
+    ///     UserFetched { name: user_name }
+    /// }).await?;
+    /// ```
     pub async fn respond<Req, Res, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
     where
         Req: Event,
@@ -408,10 +418,22 @@ impl EventBus {
             .await
     }
 
-    /// Subscribe to events of a specific type with a handler that can fail.
+    /// Subscribe to events with a handler that can return errors.
     ///
-    /// If the handler returns an `Err`, the event bus will use its retry mechanism
-    /// (with exponential backoff) before routing the event to the Dead Letter Queue.
+    /// If the async closure returns an `Err(_)`, the event bus will hold onto the event
+    /// and use its internal retry mechanism (respecting `max_retries` and `retry_backoff` 
+    /// configured in the builder). If it fails repeatedly, it is routed to the Dead Letter Queue.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe_fallible(|event: ProcessPayment| async move {
+    ///     if network_is_down() {
+    ///         return Err(tokio_events::Error::internal("Network down"));
+    ///     }
+    ///     Ok(())
+    /// }).await?;
+    /// ```
     pub async fn subscribe_fallible<T, F, Fut>(&self, handler: F) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -428,7 +450,21 @@ impl EventBus {
             .await
     }
 
-    /// Subscribe with a custom handler implementation
+    /// Subscribe using a custom struct that implements `EventHandler`.
+    ///
+    /// Unlike `subscribe()` which takes a closure, this takes a full struct implementation.
+    /// This is useful when your handler needs to maintain complex internal state, 
+    /// implement the `filter()` method to drop events instantly, or implement `on_shutdown()` 
+    /// to gracefully close database connections when the bus stops.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// struct MyHandler { db_pool: Pool }
+    /// impl EventHandler for MyHandler { ... }
+    /// 
+    /// bus.subscribe_handler::<MyEvent, _>(MyHandler { db_pool }).await?;
+    /// ```
     pub async fn subscribe_handler<T, H>(&self, handler: H) -> Result<SubscriptionHandle>
     where
         T: Event,
@@ -446,6 +482,15 @@ impl EventBus {
     /// This routes both LOCAL and REMOTE events to the provided handler.
     /// The `queue_group` ensures that if multiple instances of this microservice are running,
     /// only one instance processes each remote event (load balancing).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Multiple instances of "inventory_service" will load-balance the events
+    /// bus.subscribe_remote("inventory_service", |event: OrderPlaced| async move {
+    ///     println!("Order received from network: {}", event.id);
+    /// }).await?;
+    /// ```
     #[cfg(feature = "remote")]
     #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
     pub async fn subscribe_remote<T, F, Fut>(
@@ -538,12 +583,23 @@ impl EventBus {
         self.subscription_manager.unsubscribe(handle).await
     }
 
-    /// Replay unacknowledged events from persistent storage
+    /// Replay unacknowledged events from persistent storage.
     ///
     /// This should be called manually *after* setting up all your `.subscribe(...)`
     /// routes. The dispatcher will scan the persistent database for orphaned events
-    /// and inject them into the memory queues of the currently active subscribers.
+    /// that were saved but never dispatched before the last crash, and inject them 
+    /// into the memory queues of the currently active subscribers.
+    ///
     /// If you do not use the `persistence` feature, this method does nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// bus.subscribe(|evt: OrderPlaced| async move { ... }).await?;
+    /// 
+    /// // Now that subscribers are ready, process any missed events:
+    /// bus.replay_pending().await?;
+    /// ```
     pub async fn replay_pending(&self) -> Result<()> {
         let mut dispatcher_guard = self.dispatcher.write().await;
         if let Some(dispatcher) = dispatcher_guard.as_mut() {
@@ -557,6 +613,12 @@ impl EventBus {
     ///
     /// This utilizes the Outbox pattern. The event is first published locally
     /// (to ensure disk persistence if configured) and then dispatched over the network.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let event_id = bus.publish_remote(OrderPlaced { id: 1 }).await?;
+    /// ```
     #[cfg(feature = "remote")]
     #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
     pub async fn publish_remote<T: crate::event::Remote>(&self, event: T) -> Result<Uuid> {
@@ -688,7 +750,20 @@ impl EventBus {
         }
     }
 
-    /// Register a shutdown hook
+    /// Register a custom shutdown hook.
+    ///
+    /// Shutdown hooks are asynchronous closures executed exactly once when `bus.shutdown()`
+    /// or `bus.shutdown_gracefully()` is called. You can use this to close database
+    /// connection pools, flush metrics, or cleanly close network sockets.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// bus.register_shutdown_hook(|| async move {
+    ///     println!("Flushing redis cache before shutdown...");
+    ///     Ok(())
+    /// }).await?;
+    /// ```
     pub async fn register_shutdown_hook<F, Fut>(&self, hook: F) -> Result<()>
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -711,7 +786,11 @@ impl EventBus {
         self.is_shutting_down.load(Ordering::SeqCst)
     }
 
-    /// Shutdown the event bus abruptly
+    /// Shutdown the event bus abruptly.
+    ///
+    /// This immediately halts the dispatcher, drops any events currently sitting in the
+    /// memory queue, and shuts down all background workers. If you want to process
+    /// pending events before exiting, use `shutdown_gracefully()` instead.
     ///
     /// This method works via `&self` so you can call it on an `Arc<EventBus>`.
     pub async fn shutdown(&self) -> Result<()> {
@@ -753,14 +832,22 @@ impl EventBus {
     /// Shut down the event bus gracefully.
     ///
     /// This method performs an orchestrated shutdown:
-    /// 1. Sets the shutting down flag to reject new events.
+    /// 1. Sets the shutting down flag to reject new `publish()` calls.
     /// 2. Executes all registered shutdown hooks concurrently.
-    /// 3. Signals the dispatcher to finish processing currently queued events.
-    /// 4. Shuts down the subscription manager and unregisters all handlers.
+    /// 3. Signals the dispatcher to finish processing currently queued events (waiting up to `shutdown_timeout`).
+    /// 4. Shuts down the subscription manager and waits for handlers to finish their active futures.
     ///
     /// # Returns
     ///
     /// Returns `Ok(())` once all internal components have successfully terminated.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// tokio::signal::ctrl_c().await.unwrap();
+    /// println!("Ctrl-C received, draining queues...");
+    /// bus.shutdown_gracefully().await?;
+    /// ```
     pub async fn shutdown_gracefully(&self) -> Result<()> {
         info!("Shutting down EventBus gracefully");
 

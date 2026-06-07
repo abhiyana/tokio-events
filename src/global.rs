@@ -60,6 +60,11 @@ pub async fn publish<E: Event>(event: E) -> Result<uuid::Uuid> {
 
 /// Shuts down the global event bus abruptly.
 ///
+/// This immediately halts the dispatcher, drops any events currently sitting in the
+/// memory queue, and shuts down all background workers.
+///
+/// # Errors
+///
 /// Returns an error if the global event bus has not been initialized.
 pub async fn shutdown() -> Result<()> {
     if let Some(bus) = GLOBAL_BUS.get() {
@@ -70,6 +75,14 @@ pub async fn shutdown() -> Result<()> {
 }
 
 /// Shuts down the global event bus gracefully.
+///
+/// This method performs an orchestrated shutdown of the global instance:
+/// 1. Rejects new `publish()` calls.
+/// 2. Executes all registered shutdown hooks.
+/// 3. Signals the dispatcher to finish processing currently queued events.
+/// 4. Shuts down the subscription manager.
+///
+/// # Errors
 ///
 /// Returns an error if the global event bus has not been initialized.
 pub async fn shutdown_gracefully() -> Result<()> {

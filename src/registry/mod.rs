@@ -102,12 +102,18 @@ impl SubscriptionEntry {
     }
 }
 
-/// Trait for event registries that map event types to subscribers.
+/// Core trait for routing tables that map Event Types to Subscribers.
 ///
-/// Implementations must be thread-safe as they will be accessed
-/// concurrently from multiple tasks.
+/// The registry acts as the central directory for the event bus. When an event is published,
+/// the dispatcher queries the registry to find all active subscriptions interested in that event.
+///
+/// Implementations must be thread-safe as they will be accessed concurrently
+/// by thousands of tasks during high-throughput scenarios.
 pub trait EventRegistry: Send + Sync + Debug {
-    /// Register a new subscription for a specific event type
+    /// Register a new subscription entry for a specific event type.
+    ///
+    /// The `type_name` is used for remote and persistent routing, whereas the `TypeId`
+    /// is used for fast, local in-memory routing.
     fn register(
         &self,
         event_type: TypeId,

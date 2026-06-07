@@ -88,19 +88,44 @@ impl EventBusConfig {
         self
     }
 
-    /// Set shutdown timeout
+    /// Set the timeout duration for graceful shutdown.
+    ///
+    /// When `bus.shutdown_gracefully()` is called, the bus will wait up to this duration
+    /// for all pending events in the queues to be fully processed by their handlers.
+    /// If the timeout is reached, the bus will forcefully abort remaining tasks.
+    ///
+    /// Default is `30 seconds`.
     pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
         self
     }
 
-    /// Enable tracing
+    /// Enable or disable `tracing` span generation.
+    ///
+    /// If `true` (default), the event bus will emit detailed structured logs and spans
+    /// for every published and processed event using the `tracing` crate. This is 
+    /// highly recommended for debugging but can be disabled for absolute maximum performance.
     pub fn enable_tracing(mut self, enable: bool) -> Self {
         self.enable_tracing = enable;
         self
     }
 
-    /// Configure dispatcher
+    /// Tune the core underlying `DispatcherConfig`.
+    ///
+    /// The dispatcher is the engine that routes events to their target channels.
+    /// Use this method to configure extremely low-level details like the thread pool size,
+    /// absolute maximum queue capacity, and load shedding behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let config = EventBusConfig::new()
+    ///     .dispatcher_config(|d| {
+    ///         d.worker_threads(4)
+    ///          .max_queue_size(10_000)
+    ///          .drop_on_full(false)
+    ///     });
+    /// ```
     pub fn dispatcher_config<F>(mut self, f: F) -> Self
     where
         F: FnOnce(DispatcherConfig) -> DispatcherConfig,

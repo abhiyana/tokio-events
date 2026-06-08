@@ -280,7 +280,9 @@ impl RedbDispatcher {
 
             {
                 let read_txn = db.begin_read().ok();
-                let processed_keys_table = read_txn.as_ref().and_then(|txn| txn.open_table(PROCESSED_KEYS_TABLE).ok());
+                let processed_keys_table = read_txn
+                    .as_ref()
+                    .and_then(|txn| txn.open_table(PROCESSED_KEYS_TABLE).ok());
 
                 for msg in batch {
                     let mut is_duplicate = false;
@@ -318,12 +320,14 @@ impl RedbDispatcher {
 
                 // Check how many subscribers need this event
                 let type_id = event.type_id();
-                let mut sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
+                let mut sub_count =
+                    subscription_manager.registry().subscription_count(type_id) as u32;
 
                 if let Some(topic) = &event.metadata.topic {
                     let topic_sub_count = subscription_manager
                         .registry()
-                        .topic_subscription_count(topic) as u32;
+                        .topic_subscription_count(topic)
+                        as u32;
                     sub_count += topic_sub_count; // Rough estimate to ensure sub_count > 0
                 }
 
@@ -429,7 +433,7 @@ impl RedbDispatcher {
             for msg in batch {
                 let event = msg.envelope;
                 let event_id = event.event_id();
-                
+
                 // If wait_for_persistence is enabled, signal the publisher that the disk write is complete!
                 if let Some(tx) = msg.ack_tx {
                     let _ = tx.send(());
@@ -728,65 +732,63 @@ impl EventDispatcher for RedbDispatcher {
             .ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
         let registry = self.subscription_manager.registry();
 
-        let replay_res = tokio::task::spawn_blocking(move || -> std::result::Result<u64, String> {
-            let mut write_txn = db
-                .begin_write()
-                .map_err(|e| e.to_string())?;
-            
-            let mut count = 0;
-            let envelopes = {
-                let dlq_table = match write_txn.open_table(DLQ_TABLE) {
-                    Ok(t) => t,
-                    Err(_) => return Ok(0),
-                };
+        let replay_res =
+            tokio::task::spawn_blocking(move || -> std::result::Result<u64, String> {
+                let mut write_txn = db.begin_write().map_err(|e| e.to_string())?;
 
-                let mut envelopes = Vec::new();
-                for item in dlq_table.iter().map_err(|e| e.to_string())? {
-                    let (key, value) = item.map_err(|e| e.to_string())?;
-                    let bytes = value.value();
-                    if let Ok(persisted) = serde_json::from_slice::<PersistedEnvelope>(bytes) {
-                        envelopes.push((key.value(), persisted));
-                    }
-                }
-                envelopes
-            };
-
-            // Remove replayed items from DLQ table
-            {
-                let mut dlq_table = write_txn
-                    .open_table(DLQ_TABLE)
-                    .map_err(|e| e.to_string())?;
-                for (id, _) in &envelopes {
-                    let _ = dlq_table.remove(*id);
-                }
-            }
-
-            write_txn.commit().map_err(|e| e.to_string())?;
-
-            for (_, persisted) in envelopes {
-                if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
-                    let envelope = EventEnvelope::from_serialized(
-                        type_id,
-                        persisted.type_name,
-                        persisted.metadata,
-                        persisted.priority,
-                        persisted.payload,
-                    );
-
-                    let msg = RedbDispatcherMessage {
-                        envelope: Arc::new(envelope),
-                        ack_tx: None,
+                let mut count = 0;
+                let envelopes = {
+                    let dlq_table = match write_txn.open_table(DLQ_TABLE) {
+                        Ok(t) => t,
+                        Err(_) => return Ok(0),
                     };
 
-                    let _ = sender.try_send(msg);
-                    count += 1;
-                }
-            }
+                    let mut envelopes = Vec::new();
+                    for item in dlq_table.iter().map_err(|e| e.to_string())? {
+                        let (key, value) = item.map_err(|e| e.to_string())?;
+                        let bytes = value.value();
+                        if let Ok(persisted) = serde_json::from_slice::<PersistedEnvelope>(bytes) {
+                            envelopes.push((key.value(), persisted));
+                        }
+                    }
+                    envelopes
+                };
 
-            Ok(count)
-        })
-        .await
-        .map_err(|e| Error::internal(e.to_string()))?;
+                // Remove replayed items from DLQ table
+                {
+                    let mut dlq_table =
+                        write_txn.open_table(DLQ_TABLE).map_err(|e| e.to_string())?;
+                    for (id, _) in &envelopes {
+                        let _ = dlq_table.remove(*id);
+                    }
+                }
+
+                write_txn.commit().map_err(|e| e.to_string())?;
+
+                for (_, persisted) in envelopes {
+                    if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
+                        let envelope = EventEnvelope::from_serialized(
+                            type_id,
+                            persisted.type_name,
+                            persisted.metadata,
+                            persisted.priority,
+                            persisted.payload,
+                        );
+
+                        let msg = RedbDispatcherMessage {
+                            envelope: Arc::new(envelope),
+                            ack_tx: None,
+                        };
+
+                        let _ = sender.try_send(msg);
+                        count += 1;
+                    }
+                }
+
+                Ok(count)
+            })
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
 
         replay_res.map(|c| c as usize).map_err(Error::internal)
     }

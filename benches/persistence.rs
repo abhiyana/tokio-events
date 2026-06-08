@@ -166,9 +166,10 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| bench_redb(n_events))
     });
 
-    group.bench_function("Redb Page Cache Routing (wait_for_persistence=false)", |b| {
-        b.to_async(&runtime).iter(|| bench_redb_async(n_events))
-    });
+    group.bench_function(
+        "Redb Page Cache Routing (wait_for_persistence=false)",
+        |b| b.to_async(&runtime).iter(|| bench_redb_async(n_events)),
+    );
 
     group.finish();
 }

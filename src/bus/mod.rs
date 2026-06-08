@@ -277,12 +277,12 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
-    /// at the end of the statement, immediately cancelling your subscription before it can process 
+    /// The `subscribe` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
+    /// at the end of the statement, immediately cancelling your subscription before it can process
     /// any events.
     ///
-    /// If you want a subscription to run permanently in the background without needing to store 
+    /// If you want a subscription to run permanently in the background without needing to store
     /// the handle, you **MUST** chain `.detach()`:
     ///
     /// ```rust,ignore
@@ -326,8 +326,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_topic` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_topic` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
@@ -440,8 +440,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `respond` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `respond` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your responder.
     ///
     /// If you want the responder to run permanently in the background, you **MUST** chain `.detach()`:
@@ -491,8 +491,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_fallible` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_fallible` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
@@ -534,8 +534,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_handler` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_handler` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
@@ -572,8 +572,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_remote` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_remote` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:

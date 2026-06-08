@@ -215,15 +215,25 @@ async fn test_redb_idempotency() {
     // Publish event with IDEMPOTENCY KEY
     let metadata = tokio_events::event::EventMetadata::new().with_idempotency_key("order_123");
     bus.publish_with_metadata(
-        CriticalEvent { id: Uuid::new_v4(), data: "payment".into() },
-        metadata.clone()
-    ).await.unwrap();
+        CriticalEvent {
+            id: Uuid::new_v4(),
+            data: "payment".into(),
+        },
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
 
     // Publish exactly the SAME metadata
     bus.publish_with_metadata(
-        CriticalEvent { id: Uuid::new_v4(), data: "payment".into() },
-        metadata.clone()
-    ).await.unwrap();
+        CriticalEvent {
+            id: Uuid::new_v4(),
+            data: "payment".into(),
+        },
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
 
     bus.shutdown_gracefully().await.unwrap();
 
@@ -259,7 +269,9 @@ async fn test_redb_dlq_replay() {
             async move {
                 let is_fail = *fail.lock().await;
                 if is_fail {
-                    Err(tokio_events::Error::HandlerError("Simulated permanent failure".into()))
+                    Err(tokio_events::Error::HandlerError(
+                        "Simulated permanent failure".into(),
+                    ))
                 } else {
                     counter.fetch_add(1, Ordering::Relaxed);
                     Ok(())
@@ -270,8 +282,13 @@ async fn test_redb_dlq_replay() {
         .unwrap();
 
     // Publish an event that will permanently fail
-    bus.publish(CriticalEvent { id: Uuid::new_v4(), data: "fail".into() }).await.unwrap();
-    
+    bus.publish(CriticalEvent {
+        id: Uuid::new_v4(),
+        data: "fail".into(),
+    })
+    .await
+    .unwrap();
+
     // Give it time to fail and move to DLQ
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 

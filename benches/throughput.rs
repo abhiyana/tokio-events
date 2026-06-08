@@ -113,13 +113,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     group.bench_function("tokio::sync::broadcast", |b| {
-        b.to_async(&runtime)
-            .iter(|| bench_raw_broadcast(n_events))
+        b.to_async(&runtime).iter(|| bench_raw_broadcast(n_events))
     });
 
     group.bench_function("tokio-events (High Throughput)", |b| {
-        b.to_async(&runtime)
-            .iter(|| bench_tokio_events(n_events))
+        b.to_async(&runtime).iter(|| bench_tokio_events(n_events))
     });
 
     group.finish();

@@ -65,3 +65,16 @@ required-features = ["remote"]
 [[bench]]
 name = "throughput"
 harness = false
+
+[[bench]]
+name = "latency"
+harness = false
+
+[[bench]]
+name = "routing"
+harness = false
+
+[[bench]]
+name = "persistence"
+harness = false
+required-features = ["persistence"]

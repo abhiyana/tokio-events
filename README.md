@@ -15,7 +15,7 @@
 
 Go from zero to **2,000,000 events/sec** in 5 lines of code.
 
-## The Elevator Pitch: Why not just use `mpsc` or `broadcast`?
+## Comparison with Standard Channels
 
 `tokio::sync::broadcast` and `mpsc` channels are fantastic for simple thread-to-thread communication. But as your application grows into a complex monolith or transitions to microservices, raw channels fall short.
 
@@ -28,7 +28,18 @@ You need `tokio-events` if you require:
 
 ---
 
-## Integration in 10 Seconds (Axum Example)
+## Use Cases
+
+`tokio-events` is highly versatile and fits a variety of architectural patterns:
+
+- **Decoupled Monoliths**: Build modular applications where domains communicate strictly through events, making it trivial to extract them into microservices later.
+- **CQRS & Event Sourcing**: Use the built-in Redb disk persistence to safely store and replay domain events to populate read-models.
+- **Transactional Outboxes**: Prevent data loss when integrating with third-party APIs (e.g., Stripe, SendGrid) by persisting events locally before they are published to the network.
+- **Background Task Processing**: Offload heavy computation (e.g., image resizing, report generation) from your fast HTTP handlers to background worker threads.
+
+---
+
+## Web Framework Integration
 
 `tokio-events` is designed to be effortlessly injected into your existing web frameworks as application state.
 
@@ -76,7 +87,7 @@ async fn main() -> Result<()> {
 Add the dependency to your `Cargo.toml`:
 ```toml
 [dependencies]
-tokio-events = "0.4.0"
+tokio-events = "0.4.0" # Note: v0.4.0 is an upcoming/unreleased version
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -207,6 +218,12 @@ bus.publish_remote(UserCreated { id: 42 }).await?;
 | `remote` | Enables distributed network routing via `async-nats` JetStream. | `async-nats` |
 | `protobuf` | Enables strict schema enforcement via `prost::Message`. | `prost` |
 | `metrics` | Enables internal telemetry metrics. | `metrics` |
+
+---
+
+## Changelog
+
+See the [CHANGELOG.md](CHANGELOG.md) for detailed release notes, breaking changes, and upcoming features.
 
 ---
 

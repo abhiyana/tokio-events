@@ -235,142 +235,177 @@ impl RedbDispatcher {
     ) {
         info!("Redb dispatcher worker started");
 
-        while let Some(msg) = receiver.recv().await {
+        while let Some(first_msg) = receiver.recv().await {
             if !is_running.load(Ordering::SeqCst) {
                 break;
             }
 
-            let event = msg.envelope;
-            let ack_tx = msg.ack_tx;
+            let mut batch = Vec::new();
+            batch.push(first_msg);
 
-            let start = Instant::now();
-            let event_id = event.event_id();
-            let event_id_u128 = event_id.as_u128();
-
-            // Check how many subscribers need this event
-            let type_id = event.type_id();
-            let mut sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
-
-            if let Some(topic) = &event.metadata.topic {
-                let topic_sub_count = subscription_manager
-                    .registry()
-                    .topic_subscription_count(topic) as u32;
-                sub_count += topic_sub_count; // Rough estimate to ensure sub_count > 0
+            // Group Commit: Drain up to 1000 pending messages from the channel
+            while batch.len() < 1000 {
+                match receiver.try_recv() {
+                    Ok(msg) => batch.push(msg),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                }
             }
 
-            if sub_count > 0 {
-                // Construct PersistedEnvelope
-                let persisted_result = event.into_bytes().map(|payload| PersistedEnvelope {
-                    type_name: event.event_type().to_string(),
-                    metadata: event.metadata.clone(),
-                    priority: event.priority,
-                    payload,
-                });
+            let mut db_inserts = Vec::with_capacity(batch.len());
 
-                // Serialize and write to redb
-                match persisted_result.and_then(|pe| {
-                    serde_json::to_vec(&pe)
-                        .map_err(|e| crate::Error::SerializationError(e.to_string()))
-                }) {
-                    Ok(bytes) => {
-                        let is_scheduled = event
-                            .metadata
-                            .deliver_at
-                            .map(|d| d > chrono::Utc::now())
-                            .unwrap_or(false);
-                        let deliver_at_ms = event
-                            .metadata
-                            .deliver_at
-                            .map(|d| d.timestamp_millis() as u64)
-                            .unwrap_or(0);
+            for msg in &batch {
+                let event = &msg.envelope;
+                let event_id = event.event_id();
+                let event_id_u128 = event_id.as_u128();
 
-                        let write_txn_res = tokio::task::spawn_blocking({
-                            let db = db.clone();
-                            move || -> std::result::Result<(), String> {
-                                let write_txn = db.begin_write().map_err(|e| e.to_string())?;
-                                {
-                                    if is_scheduled {
-                                        let mut scheduled_events = write_txn
-                                            .open_table(SCHEDULED_EVENTS_TABLE)
-                                            .map_err(|e| e.to_string())?;
-                                        scheduled_events
-                                            .insert(
-                                                (deliver_at_ms, event_id_u128),
-                                                bytes.as_slice(),
-                                            )
-                                            .map_err(|e| e.to_string())?;
-                                    } else {
-                                        let mut events = write_txn
-                                            .open_table(EVENTS_TABLE)
-                                            .map_err(|e| e.to_string())?;
-                                        let mut refcounts = write_txn
-                                            .open_table(REFCOUNT_TABLE)
-                                            .map_err(|e| e.to_string())?;
-                                        events
-                                            .insert(event_id_u128, bytes.as_slice())
-                                            .map_err(|e| e.to_string())?;
-                                        refcounts
-                                            .insert(event_id_u128, sub_count)
-                                            .map_err(|e| e.to_string())?;
-                                    }
-                                }
-                                write_txn.commit().map_err(|e| e.to_string())
-                            }
-                        })
-                        .await;
+                // Check how many subscribers need this event
+                let type_id = event.type_id();
+                let mut sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
 
-                        if let Err(e) = write_txn_res {
-                            error!("Failed to persist event to redb: {}", e);
+                if let Some(topic) = &event.metadata.topic {
+                    let topic_sub_count = subscription_manager
+                        .registry()
+                        .topic_subscription_count(topic) as u32;
+                    sub_count += topic_sub_count; // Rough estimate to ensure sub_count > 0
+                }
+
+                if sub_count > 0 {
+                    // Construct PersistedEnvelope
+                    let persisted_result = event.into_bytes().map(|payload| PersistedEnvelope {
+                        type_name: event.event_type().to_string(),
+                        metadata: event.metadata.clone(),
+                        priority: event.priority,
+                        payload,
+                    });
+
+                    // Serialize and prepare for redb
+                    match persisted_result.and_then(|pe| {
+                        serde_json::to_vec(&pe)
+                            .map_err(|e| crate::Error::SerializationError(e.to_string()))
+                    }) {
+                        Ok(bytes) => {
+                            let is_scheduled = event
+                                .metadata
+                                .deliver_at
+                                .map(|d| d > chrono::Utc::now())
+                                .unwrap_or(false);
+                            let deliver_at_ms = event
+                                .metadata
+                                .deliver_at
+                                .map(|d| d.timestamp_millis() as u64)
+                                .unwrap_or(0);
+
+                            db_inserts.push((
+                                event_id_u128,
+                                sub_count,
+                                is_scheduled,
+                                deliver_at_ms,
+                                bytes,
+                                event.event_type().to_string()
+                            ));
+                        }
+                        Err(e) => {
+                            error!("Failed to serialize event for persistence: {}", e);
                             dispatch_errors.fetch_add(1, Ordering::Relaxed);
-                            continue;
                         }
+                    }
+                }
+            }
 
-                        // If wait_for_persistence is enabled, signal the publisher that the disk write is complete!
-                        if let Some(tx) = ack_tx {
-                            let _ = tx.send(());
+            if !db_inserts.is_empty() {
+                let write_txn_res = tokio::task::spawn_blocking({
+                    let db = db.clone();
+                    move || -> std::result::Result<(), String> {
+                        let write_txn = db.begin_write().map_err(|e| e.to_string())?;
+                        {
+                            let mut scheduled_events = write_txn
+                                .open_table(SCHEDULED_EVENTS_TABLE)
+                                .map_err(|e| e.to_string())?;
+                            let mut events = write_txn
+                                .open_table(EVENTS_TABLE)
+                                .map_err(|e| e.to_string())?;
+                            let mut refcounts = write_txn
+                                .open_table(REFCOUNT_TABLE)
+                                .map_err(|e| e.to_string())?;
+
+                            for (id, sub_count, is_scheduled, deliver_at_ms, bytes, _type_name) in db_inserts {
+                                if is_scheduled {
+                                    scheduled_events
+                                        .insert((deliver_at_ms, id), bytes.as_slice())
+                                        .map_err(|e| e.to_string())?;
+                                } else {
+                                    events
+                                        .insert(id, bytes.as_slice())
+                                        .map_err(|e| e.to_string())?;
+                                    refcounts
+                                        .insert(id, sub_count)
+                                        .map_err(|e| e.to_string())?;
+                                }
+                                
+                                #[cfg(feature = "metrics")]
+                                metrics::counter!("tokio_events_persistence_writes_total", "type" => _type_name).increment(1);
+                            }
                         }
+                        write_txn.commit().map_err(|e| e.to_string())
+                    }
+                })
+                .await;
 
-                        #[cfg(feature = "metrics")]
-                        metrics::counter!("tokio_events_persistence_writes_total", "type" => event.event_type().to_string()).increment(1);
+                if let Err(e) = write_txn_res {
+                    error!("Failed to persist batch to redb: {}", e);
+                    dispatch_errors.fetch_add(batch.len() as u64, Ordering::Relaxed);
+                    continue;
+                }
+            }
 
-                        // If it's a scheduled event, we are done! The Poller will pick it up later.
-                        if is_scheduled {
-                            continue;
-                        }
+            // Now that the entire batch is durably persisted to physical disk, we can dispatch and ack
+            for msg in batch {
+                let event = msg.envelope;
+                let event_id = event.event_id();
+                
+                // If wait_for_persistence is enabled, signal the publisher that the disk write is complete!
+                if let Some(tx) = msg.ack_tx {
+                    let _ = tx.send(());
+                }
+
+                let is_scheduled = event
+                    .metadata
+                    .deliver_at
+                    .map(|d| d > chrono::Utc::now())
+                    .unwrap_or(false);
+
+                if is_scheduled {
+                    continue;
+                }
+
+                let dispatch_start = Instant::now();
+                // Dispatch to memory channels
+                let dispatch_result = if config.processing_timeout_ms > 0 {
+                    tokio::time::timeout(
+                        tokio::time::Duration::from_millis(config.processing_timeout_ms),
+                        subscription_manager.dispatch(event.clone()),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        error!("Event dispatch timed out");
+                        Err(Error::internal("Dispatch timeout"))
+                    })
+                } else {
+                    subscription_manager.dispatch(event.clone()).await
+                };
+
+                let elapsed_us = dispatch_start.elapsed().as_micros() as u64;
+
+                match dispatch_result {
+                    Ok(()) => {
+                        events_dispatched.fetch_add(1, Ordering::Relaxed);
+                        total_dispatch_time_us.fetch_add(elapsed_us, Ordering::Relaxed);
                     }
                     Err(e) => {
-                        error!("Failed to serialize event for persistence: {}", e);
                         dispatch_errors.fetch_add(1, Ordering::Relaxed);
-                        continue;
+                        error!(event_id = %event_id, error = %e, "Failed to dispatch event");
                     }
-                }
-            }
-
-            // Dispatch to memory channels
-            let dispatch_result = if config.processing_timeout_ms > 0 {
-                tokio::time::timeout(
-                    tokio::time::Duration::from_millis(config.processing_timeout_ms),
-                    subscription_manager.dispatch(event.clone()),
-                )
-                .await
-                .unwrap_or_else(|_| {
-                    error!("Event dispatch timed out");
-                    Err(Error::internal("Dispatch timeout"))
-                })
-            } else {
-                subscription_manager.dispatch(event.clone()).await
-            };
-
-            let elapsed_us = start.elapsed().as_micros() as u64;
-
-            match dispatch_result {
-                Ok(()) => {
-                    events_dispatched.fetch_add(1, Ordering::Relaxed);
-                    total_dispatch_time_us.fetch_add(elapsed_us, Ordering::Relaxed);
-                }
-                Err(e) => {
-                    dispatch_errors.fetch_add(1, Ordering::Relaxed);
-                    error!(event_id = %event_id, error = %e, "Failed to dispatch event");
                 }
             }
         }

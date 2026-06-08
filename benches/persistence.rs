@@ -38,8 +38,15 @@ async fn bench_memory(n: usize) {
     .unwrap()
     .detach();
 
+    let mut tasks = Vec::new();
     for _ in 0..n {
-        bus.publish(PersistEvent {}).await.unwrap();
+        let bus_clone = bus.clone();
+        tasks.push(tokio::spawn(async move {
+            bus_clone.publish(PersistEvent {}).await.unwrap();
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
     }
 
     notify.notified().await;
@@ -78,8 +85,62 @@ async fn bench_redb(n: usize) {
     .unwrap()
     .detach();
 
+    let mut tasks = Vec::new();
     for _ in 0..n {
-        bus.publish(PersistEvent {}).await.unwrap();
+        let bus_clone = bus.clone();
+        tasks.push(tokio::spawn(async move {
+            bus_clone.publish(PersistEvent {}).await.unwrap();
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    notify.notified().await;
+    bus.shutdown().await.unwrap();
+}
+
+async fn bench_redb_async(n: usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("bench_queue_async.redb");
+
+    let bus = Arc::new(
+        EventBusBuilder::new()
+            .with_redb_path(db_path.to_str().unwrap())
+            .wait_for_persistence(false) // Use the OS Page Cache
+            .build()
+            .await
+            .unwrap(),
+    );
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let notify = Arc::new(Notify::new());
+
+    let c_count = count.clone();
+    let c_notify = notify.clone();
+
+    bus.subscribe(move |_: PersistEvent| {
+        let c_count = c_count.clone();
+        let c_notify = c_notify.clone();
+        async move {
+            if c_count.fetch_add(1, Ordering::Relaxed) + 1 == n {
+                c_notify.notify_one();
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .detach();
+
+    let mut tasks = Vec::new();
+    for _ in 0..n {
+        let bus_clone = bus.clone();
+        tasks.push(tokio::spawn(async move {
+            bus_clone.publish(PersistEvent {}).await.unwrap();
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
     }
 
     notify.notified().await;
@@ -103,6 +164,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.sample_size(10);
     group.bench_function("Redb Persistence Routing", |b| {
         b.to_async(&runtime).iter(|| bench_redb(n_events))
+    });
+
+    group.bench_function("Redb Page Cache Routing (wait_for_persistence=false)", |b| {
+        b.to_async(&runtime).iter(|| bench_redb_async(n_events))
     });
 
     group.finish();

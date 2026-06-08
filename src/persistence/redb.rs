@@ -97,7 +97,7 @@ impl RedbRegistry {
                             if current <= 1 {
                                 // Last subscriber processed it, remove it from the DB
                                 let _ = refcounts.remove(event_id_u128);
-                                
+
                                 if !is_success {
                                     // Event failed permanently, move the payload to DLQ_TABLE
                                     if let Ok(Some(payload_access)) = events.get(event_id_u128) {
@@ -105,7 +105,7 @@ impl RedbRegistry {
                                         trace!(event_id = %event_id, "Event failed permanently and moved to DLQ_TABLE");
                                     }
                                 }
-                                
+
                                 let _ = events.remove(event_id_u128);
                                 trace!(event_id = %event_id, "Event completely processed and removed from DB");
                             } else {
@@ -412,7 +412,7 @@ impl RedbDispatcher {
                                         .insert(id, sub_count)
                                         .map_err(|e| e.to_string())?;
                                 }
-                                
+
                                 #[cfg(feature = "metrics")]
                                 metrics::counter!("tokio_events_persistence_writes_total", "type" => _type_name).increment(1);
                             }
@@ -734,7 +734,7 @@ impl EventDispatcher for RedbDispatcher {
 
         let replay_res =
             tokio::task::spawn_blocking(move || -> std::result::Result<u64, String> {
-                let mut write_txn = db.begin_write().map_err(|e| e.to_string())?;
+                let write_txn = db.begin_write().map_err(|e| e.to_string())?;
 
                 let mut count = 0;
                 let envelopes = {

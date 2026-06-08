@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="assets/logo.png" alt="tokio-events logo" width="200" height="200" />
   <h1>tokio-events</h1>
   <p><strong>A zero-lock, high-throughput, enterprise-grade event bus for Rust.</strong></p>
   

@@ -34,23 +34,25 @@ const REFCOUNT_TABLE: TableDefinition<'_, u128, u32> = TableDefinition::new("ref
 /// Scheduled events. Key is (timestamp_ms, event_id). This allows automatic chronological sorting.
 const SCHEDULED_EVENTS_TABLE: TableDefinition<'_, (u64, u128), &[u8]> =
     TableDefinition::new("scheduled_events");
+const PROCESSED_KEYS_TABLE: TableDefinition<'_, &str, u8> = TableDefinition::new("processed_keys");
+const DLQ_TABLE: TableDefinition<'_, u128, &[u8]> = TableDefinition::new("dlq");
 
 /// A registry that wraps an in-memory registry and intercepts acks to update redb
 #[derive(Debug)]
 pub struct RedbRegistry {
     inner: Arc<DashMapRegistry>,
-    ack_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+    ack_tx: tokio::sync::mpsc::UnboundedSender<(Uuid, bool)>,
 }
 
 impl RedbRegistry {
     /// Create a new RedbRegistry
     pub fn new(db: Arc<Database>, inner: Arc<DashMapRegistry>) -> Self {
-        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<Uuid>();
+        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<(Uuid, bool)>();
         let db_clone = db.clone();
 
         // Background worker to process DB acks without blocking the Tokio reactor
         tokio::spawn(async move {
-            while let Some(event_id) = ack_rx.recv().await {
+            while let Some((event_id, is_success)) = ack_rx.recv().await {
                 let db_for_task = db_clone.clone();
                 let res = tokio::task::spawn_blocking(move || {
                     let event_id_u128 = event_id.as_u128();
@@ -77,6 +79,13 @@ impl RedbRegistry {
                                 return;
                             }
                         };
+                        let mut dlq_table = match write_txn.open_table(DLQ_TABLE) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!("Failed to open dlq table: {}", e);
+                                return;
+                            }
+                        };
 
                         let current = if let Ok(Some(count_access)) = refcounts.get(event_id_u128) {
                             Some(count_access.value())
@@ -86,8 +95,17 @@ impl RedbRegistry {
 
                         if let Some(current) = current {
                             if current <= 1 {
-                                // Last subscriber processed it, delete the event
+                                // Last subscriber processed it, remove it from the DB
                                 let _ = refcounts.remove(event_id_u128);
+
+                                if !is_success {
+                                    // Event failed permanently, move the payload to DLQ_TABLE
+                                    if let Ok(Some(payload_access)) = events.get(event_id_u128) {
+                                        let _ = dlq_table.insert(event_id_u128, payload_access.value());
+                                        trace!(event_id = %event_id, "Event failed permanently and moved to DLQ_TABLE");
+                                    }
+                                }
+
                                 let _ = events.remove(event_id_u128);
                                 trace!(event_id = %event_id, "Event completely processed and removed from DB");
                             } else {
@@ -162,7 +180,12 @@ impl EventRegistry for RedbRegistry {
     }
 
     fn ack_event(&self, _subscription_id: Uuid, event_id: Uuid) {
-        let _ = self.ack_tx.send(event_id);
+        let _ = self.ack_tx.send((event_id, true));
+    }
+
+    fn mark_failed(&self, _subscription_id: Uuid, event_id: Uuid) -> Result<()> {
+        let _ = self.ack_tx.send((event_id, false));
+        Ok(())
     }
 }
 
@@ -252,6 +275,42 @@ impl RedbDispatcher {
                 }
             }
 
+            let mut valid_batch = Vec::new();
+            let mut batch_keys = std::collections::HashSet::new();
+
+            {
+                let read_txn = db.begin_read().ok();
+                let processed_keys_table = read_txn
+                    .as_ref()
+                    .and_then(|txn| txn.open_table(PROCESSED_KEYS_TABLE).ok());
+
+                for msg in batch {
+                    let mut is_duplicate = false;
+                    if let Some(key) = &msg.envelope.metadata.idempotency_key {
+                        if batch_keys.contains(key) {
+                            is_duplicate = true;
+                        } else if let Some(table) = &processed_keys_table {
+                            if table.get(key.as_str()).unwrap_or(None).is_some() {
+                                is_duplicate = true;
+                            }
+                        }
+                        if !is_duplicate {
+                            batch_keys.insert(key.clone());
+                        }
+                    }
+
+                    if !is_duplicate {
+                        valid_batch.push(msg);
+                    } else {
+                        // Duplicate! Ack instantly and discard.
+                        if let Some(tx) = msg.ack_tx {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            }
+
+            let batch = valid_batch;
             let mut db_inserts = Vec::with_capacity(batch.len());
 
             for msg in &batch {
@@ -261,12 +320,14 @@ impl RedbDispatcher {
 
                 // Check how many subscribers need this event
                 let type_id = event.type_id();
-                let mut sub_count = subscription_manager.registry().subscription_count(type_id) as u32;
+                let mut sub_count =
+                    subscription_manager.registry().subscription_count(type_id) as u32;
 
                 if let Some(topic) = &event.metadata.topic {
                     let topic_sub_count = subscription_manager
                         .registry()
-                        .topic_subscription_count(topic) as u32;
+                        .topic_subscription_count(topic)
+                        as u32;
                     sub_count += topic_sub_count; // Rough estimate to ensure sub_count > 0
                 }
 
@@ -302,7 +363,8 @@ impl RedbDispatcher {
                                 is_scheduled,
                                 deliver_at_ms,
                                 bytes,
-                                event.event_type().to_string()
+                                event.event_type().to_string(),
+                                event.metadata.idempotency_key.clone(),
                             ));
                         }
                         Err(e) => {
@@ -329,7 +391,15 @@ impl RedbDispatcher {
                                 .open_table(REFCOUNT_TABLE)
                                 .map_err(|e| e.to_string())?;
 
-                            for (id, sub_count, is_scheduled, deliver_at_ms, bytes, _type_name) in db_inserts {
+                            let mut processed_keys = write_txn
+                                .open_table(PROCESSED_KEYS_TABLE)
+                                .map_err(|e| e.to_string())?;
+
+                            for (id, sub_count, is_scheduled, deliver_at_ms, bytes, _type_name, idempotency_key) in db_inserts {
+                                if let Some(key) = idempotency_key {
+                                    processed_keys.insert(key.as_str(), 1).map_err(|e| e.to_string())?;
+                                }
+
                                 if is_scheduled {
                                     scheduled_events
                                         .insert((deliver_at_ms, id), bytes.as_slice())
@@ -342,7 +412,7 @@ impl RedbDispatcher {
                                         .insert(id, sub_count)
                                         .map_err(|e| e.to_string())?;
                                 }
-                                
+
                                 #[cfg(feature = "metrics")]
                                 metrics::counter!("tokio_events_persistence_writes_total", "type" => _type_name).increment(1);
                             }
@@ -363,7 +433,7 @@ impl RedbDispatcher {
             for msg in batch {
                 let event = msg.envelope;
                 let event_id = event.event_id();
-                
+
                 // If wait_for_persistence is enabled, signal the publisher that the disk write is complete!
                 if let Some(tx) = msg.ack_tx {
                     let _ = tx.send(());
@@ -654,6 +724,75 @@ impl EventDispatcher for RedbDispatcher {
         }
     }
 
+    async fn replay_dlq(&self) -> Result<usize> {
+        let db = self.db.clone();
+        let sender = self
+            .sender
+            .clone()
+            .ok_or_else(|| Error::internal("Dispatcher not initialized"))?;
+        let registry = self.subscription_manager.registry();
+
+        let replay_res =
+            tokio::task::spawn_blocking(move || -> std::result::Result<u64, String> {
+                let write_txn = db.begin_write().map_err(|e| e.to_string())?;
+
+                let mut count = 0;
+                let envelopes = {
+                    let dlq_table = match write_txn.open_table(DLQ_TABLE) {
+                        Ok(t) => t,
+                        Err(_) => return Ok(0),
+                    };
+
+                    let mut envelopes = Vec::new();
+                    for item in dlq_table.iter().map_err(|e| e.to_string())? {
+                        let (key, value) = item.map_err(|e| e.to_string())?;
+                        let bytes = value.value();
+                        if let Ok(persisted) = serde_json::from_slice::<PersistedEnvelope>(bytes) {
+                            envelopes.push((key.value(), persisted));
+                        }
+                    }
+                    envelopes
+                };
+
+                // Remove replayed items from DLQ table
+                {
+                    let mut dlq_table =
+                        write_txn.open_table(DLQ_TABLE).map_err(|e| e.to_string())?;
+                    for (id, _) in &envelopes {
+                        let _ = dlq_table.remove(*id);
+                    }
+                }
+
+                write_txn.commit().map_err(|e| e.to_string())?;
+
+                for (_, persisted) in envelopes {
+                    if let Some(type_id) = registry.get_type_id(&persisted.type_name) {
+                        let envelope = EventEnvelope::from_serialized(
+                            type_id,
+                            persisted.type_name,
+                            persisted.metadata,
+                            persisted.priority,
+                            persisted.payload,
+                        );
+
+                        let msg = RedbDispatcherMessage {
+                            envelope: Arc::new(envelope),
+                            ack_tx: None,
+                        };
+
+                        let _ = sender.try_send(msg);
+                        count += 1;
+                    }
+                }
+
+                Ok(count)
+            })
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        replay_res.map(|c| c as usize).map_err(Error::internal)
+    }
+
     async fn replay_pending(&self) -> Result<()> {
         let db = self.db.clone();
         let sender = self
@@ -878,7 +1017,7 @@ mod tests {
         write_txn.commit().unwrap();
 
         // Ack once (should drop refcount to 1, but not delete event)
-        registry.ack_tx.send(id1).unwrap();
+        registry.ack_tx.send((id1, true)).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // give background task time to run
 
         let read_txn = db.begin_read().unwrap();
@@ -893,7 +1032,7 @@ mod tests {
         drop(read_txn);
 
         // Ack twice (should drop refcount to 0, and DELETE event)
-        registry.ack_tx.send(id1).unwrap();
+        registry.ack_tx.send((id1, true)).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let read_txn = db.begin_read().unwrap();

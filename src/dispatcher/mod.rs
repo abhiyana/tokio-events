@@ -37,6 +37,11 @@ pub trait EventDispatcher: Send + Sync {
         Ok(())
     }
 
+    /// Replay permanently failed events from the Dead Letter Queue
+    async fn replay_dlq(&self) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Check if the dispatcher is running
     fn is_running(&self) -> bool;
 

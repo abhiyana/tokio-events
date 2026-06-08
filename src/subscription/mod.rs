@@ -277,8 +277,8 @@ impl SubscriptionManager {
                                                 }
 
                                                 // We must still ack the event so it gets removed from the dispatcher/persistence
-                                                // since we've now routed it to DLQ (or dropped it).
-                                                registry_clone.ack_event(sub_id, envelope_clone.event_id());
+                                                // Since it failed, we use mark_failed so Redb moves it to DLQ_TABLE.
+                                                let _ = registry_clone.mark_failed(sub_id, envelope_clone.event_id());
 
                                                 break;
                                             }
@@ -405,8 +405,8 @@ impl SubscriptionManager {
                                                 }
 
                                                 // We must still ack the event so it gets removed from the dispatcher/persistence
-                                                // since we've now routed it to DLQ (or dropped it).
-                                                registry_clone.ack_event(sub_id, envelope_clone.event_id());
+                                                // Since it failed, we use mark_failed so Redb moves it to DLQ_TABLE.
+                                                let _ = registry_clone.mark_failed(sub_id, envelope_clone.event_id());
                                                 break;
                                             }
 

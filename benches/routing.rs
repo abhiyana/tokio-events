@@ -56,15 +56,18 @@ fn criterion_benchmark(c: &mut Criterion) {
         .unwrap();
 
     group.bench_function("Exact Match (orders.eu)", |b| {
-        b.to_async(&runtime).iter(|| bench_routing(n_events, "orders.eu", "orders.eu"))
+        b.to_async(&runtime)
+            .iter(|| bench_routing(n_events, "orders.eu", "orders.eu"))
     });
 
     group.bench_function("Single Wildcard (orders.*)", |b| {
-        b.to_async(&runtime).iter(|| bench_routing(n_events, "orders.*", "orders.eu"))
+        b.to_async(&runtime)
+            .iter(|| bench_routing(n_events, "orders.*", "orders.eu"))
     });
 
     group.bench_function("Multi Wildcard (orders.>)", |b| {
-        b.to_async(&runtime).iter(|| bench_routing(n_events, "orders.>", "orders.eu.france.paris"))
+        b.to_async(&runtime)
+            .iter(|| bench_routing(n_events, "orders.>", "orders.eu.france.paris"))
     });
 
     group.finish();

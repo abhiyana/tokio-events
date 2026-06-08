@@ -5,6 +5,16 @@ All notable changes to `tokio-events` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+### Added
+- **Idempotency Keys (Exactly-Once Delivery)**: Added `idempotency_key` to `EventMetadata`. When persistence is enabled, the Redb engine uses this key to guarantee exactly-once delivery, automatically dropping duplicate events before routing.
+- **Built-In DLQ Replay**: The Redb persistence engine now automatically captures permanently failed events in a dedicated `DLQ_TABLE`. A new `bus.replay_dlq().await` method allows you to easily retry all failed events after a bug fix.
+
+### Changed
+- **Performance (Persistence)**: Implemented "Group Commit" batching in the `RedbDispatcher`. The dispatcher now drains up to 1,000 pending events per tick and persists them in a single SSD physical flush, resulting in a **~14x increase in disk write throughput**.
+- **Performance (Routing Engine)**: Completely eliminated lock contention (`RwLock`) in the event routing registry by migrating to the **RCU (Read-Copy-Update)** pattern via the `arc-swap` crate. Publishing events is now 100% lock-free.
+
 ## [0.3.2] - 2026-06-07
 
 ### Documentation

@@ -120,6 +120,23 @@ impl EventBus {
             .await
     }
 
+    /// Replay permanently failed events from the Dead Letter Queue.
+    ///
+    /// This method will read all events stored in the DLQ table, remove them,
+    /// and push them back into the event dispatcher to be processed again.
+    /// This is incredibly useful for recovering from temporary outages or buggy handlers.
+    ///
+    /// Only works if persistence is enabled.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of events that were replayed from the DLQ.
+    pub async fn replay_dlq(&self) -> Result<usize> {
+        let guard = self.dispatcher.read().await;
+        let dispatcher = guard.as_ref().ok_or(Error::ShuttingDown)?;
+        dispatcher.replay_dlq().await
+    }
+
     /// Publish an event with custom metadata.
     ///
     /// This allows you to attach vital contextual information to the event envelope
@@ -260,12 +277,12 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
-    /// at the end of the statement, immediately cancelling your subscription before it can process 
+    /// The `subscribe` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
+    /// at the end of the statement, immediately cancelling your subscription before it can process
     /// any events.
     ///
-    /// If you want a subscription to run permanently in the background without needing to store 
+    /// If you want a subscription to run permanently in the background without needing to store
     /// the handle, you **MUST** chain `.detach()`:
     ///
     /// ```rust,ignore
@@ -309,8 +326,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_topic` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_topic` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
@@ -423,8 +440,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `respond` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `respond` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your responder.
     ///
     /// If you want the responder to run permanently in the background, you **MUST** chain `.detach()`:
@@ -474,8 +491,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_fallible` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_fallible` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
@@ -517,8 +534,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_handler` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_handler` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:
@@ -555,8 +572,8 @@ impl EventBus {
     ///
     /// # CRITICAL: Handle Lifecycle
     ///
-    /// The `subscribe_remote` method returns a `SubscriptionHandle`. If you do **not** assign this 
-    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle 
+    /// The `subscribe_remote` method returns a `SubscriptionHandle`. If you do **not** assign this
+    /// handle to a variable (e.g., `let handle = ...`), Rust will instantly drop the handle
     /// at the end of the statement, immediately cancelling your subscription.
     ///
     /// If you want a subscription to run permanently in the background, you **MUST** chain `.detach()`:

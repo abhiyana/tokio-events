@@ -136,6 +136,13 @@ pub trait EventRegistry: Send + Sync + Debug {
     /// Update subscription statistics
     fn increment_processed(&self, subscription_id: Uuid);
 
+    /// Mark an event dispatch as permanently failed for a subscription
+    fn mark_failed(&self, subscription_id: Uuid, event_id: Uuid) -> Result<()> {
+        let _ = subscription_id;
+        let _ = event_id;
+        Ok(())
+    }
+
     /// Mark a subscription as inactive
     fn deactivate(&self, subscription_id: Uuid) -> Result<()>;
 

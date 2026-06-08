@@ -187,3 +187,123 @@ async fn test_redb_concurrent_workers() {
 
     assert_eq!(processed_count.load(Ordering::Relaxed), 200);
 }
+
+#[tokio::test]
+async fn test_redb_idempotency() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("events_idempotency.redb");
+
+    let bus = EventBus::builder()
+        .with_redb_path(&db_path)
+        .build()
+        .await
+        .unwrap();
+
+    let processed_count = Arc::new(AtomicUsize::new(0));
+    let count_clone = processed_count.clone();
+
+    let _sub = bus
+        .subscribe(move |_: CriticalEvent| {
+            let counter = count_clone.clone();
+            async move {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .await
+        .unwrap();
+
+    // Publish event with IDEMPOTENCY KEY
+    let metadata = tokio_events::event::EventMetadata::new().with_idempotency_key("order_123");
+    bus.publish_with_metadata(
+        CriticalEvent {
+            id: Uuid::new_v4(),
+            data: "payment".into(),
+        },
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+
+    // Publish exactly the SAME metadata
+    bus.publish_with_metadata(
+        CriticalEvent {
+            id: Uuid::new_v4(),
+            data: "payment".into(),
+        },
+        metadata.clone(),
+    )
+    .await
+    .unwrap();
+
+    bus.shutdown_gracefully().await.unwrap();
+
+    // Only one should be processed!
+    assert_eq!(processed_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn test_redb_dlq_replay() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("events_dlq.redb");
+
+    let mut config = tokio_events::bus::config::EventBusConfig::default();
+    config = config.max_retries(0); // Fail instantly on first error
+
+    let bus = EventBus::builder()
+        .with_config(config)
+        .with_redb_path(&db_path)
+        .build()
+        .await
+        .unwrap();
+
+    let should_fail = Arc::new(tokio::sync::Mutex::new(true));
+    let should_fail_clone = should_fail.clone();
+
+    let processed_count = Arc::new(AtomicUsize::new(0));
+    let count_clone = processed_count.clone();
+
+    let _sub = bus
+        .subscribe_fallible(move |_: CriticalEvent| {
+            let counter = count_clone.clone();
+            let fail = should_fail_clone.clone();
+            async move {
+                let is_fail = *fail.lock().await;
+                if is_fail {
+                    Err(tokio_events::Error::HandlerError(
+                        "Simulated permanent failure".into(),
+                    ))
+                } else {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+    // Publish an event that will permanently fail
+    bus.publish(CriticalEvent {
+        id: Uuid::new_v4(),
+        data: "fail".into(),
+    })
+    .await
+    .unwrap();
+
+    // Give it time to fail and move to DLQ
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Verify it failed
+    assert_eq!(processed_count.load(Ordering::Relaxed), 0);
+
+    // Fix the bug!
+    *should_fail.lock().await = false;
+
+    // Replay the DLQ
+    let replayed = bus.replay_dlq().await.unwrap();
+    assert_eq!(replayed, 1);
+
+    bus.shutdown_gracefully().await.unwrap();
+
+    // Verify it succeeded on the replay!
+    assert_eq!(processed_count.load(Ordering::Relaxed), 1);
+}

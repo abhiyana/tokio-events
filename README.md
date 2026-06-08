@@ -1,6 +1,6 @@
 <div align="center">
-  <h1>🚀 tokio-events</h1>
-  <p><strong>A zero-lock, high-throughput, enterprise-grade event bus for Rust.</strong></p>
+  <h1>tokio-events</h1>
+  <p><strong>A high-throughput, lock-free event bus for Rust applications.</strong></p>
   
   [![Crates.io](https://img.shields.io/crates/v/tokio-events?style=flat-square)](https://crates.io/crates/tokio-events)
   [![Documentation](https://img.shields.io/docsrs/tokio-events?style=flat-square)](https://docs.rs/tokio-events)
@@ -11,21 +11,21 @@
 
 ---
 
-`tokio-events` is a modern, type-safe, asynchronous event bus built natively on `tokio`. It scales seamlessly from a blazing-fast in-memory pub/sub channel in a monolith, all the way to a strictly-typed, distributed, persistent event architecture across microservices.
+`tokio-events` is a modern, type-safe, asynchronous event bus built natively on `tokio`. It scales seamlessly from a high-performance in-memory pub/sub channel in a monolith, all the way to a strictly-typed, distributed, persistent event architecture across microservices.
 
-Go from zero to **2,000,000 events/sec** in 5 lines of code.
+Designed for raw throughput, it processes over **2,000,000 events/sec** while maintaining strict enterprise reliability guarantees.
 
-## ✨ Why tokio-events?
+## Core Features
 
-- **⚡ Lock-Free Routing (RCU)**: Event publishing is completely lock-free. By utilizing the `arc-swap` Read-Copy-Update pattern, `tokio-events` eliminates Cache Line Bouncing, allowing you to publish millions of events per second across all CPU cores without contention.
-- **🛡️ Exactly-Once Delivery (Idempotency)**: Natively attach `idempotency_key`s to your events. The embedded `redb` storage engine guarantees duplicate events are filtered instantly before reaching subscribers.
-- **💾 Disk Persistence & Group Commit**: (Optional) Never lose an event. Un-ACK'd events are stored on disk. The engine uses Group Commit batching to drain thousands of events into a single SSD physical flush, resulting in a **~14x increase** in disk write throughput.
-- **♻️ Built-In Dead Letter Queues (DLQ)**: Permanently failed events are automatically captured in a dedicated `DLQ_TABLE` for easy inspection and simple one-line `.replay_dlq().await` recovery.
-- **🌍 Microservices Ready**: Built-in support for NATS JetStream distributed routing and strict schema enforcement via `prost` Protobuf.
+- **Lock-Free Routing (RCU)**: Event publishing is completely lock-free. By utilizing the `arc-swap` Read-Copy-Update pattern, `tokio-events` eliminates Cache Line Bouncing, allowing you to publish millions of events per second across all CPU cores without contention.
+- **Exactly-Once Delivery (Idempotency)**: Natively attach `idempotency_key` identifiers to your events. The embedded `redb` storage engine guarantees duplicate events are filtered instantly before reaching subscribers, ensuring exactly-once processing constraints are met.
+- **Disk Persistence & Group Commit**: (Optional) Never lose an event. Unacknowledged events are stored on disk. The engine uses Group Commit batching to drain thousands of events into a single SSD physical flush, resulting in a highly optimized disk write throughput.
+- **Built-In Dead Letter Queues (DLQ)**: Permanently failed events are automatically captured in a dedicated `DLQ_TABLE` for auditing and inspection, with a simplified `.replay_dlq().await` API for automated recovery flows.
+- **Microservices Ready**: Built-in support for NATS JetStream distributed routing and strict schema enforcement via `prost` Protobuf serialization.
 
 ---
 
-## 🚀 Quick Start (In-Memory JSON)
+## Quick Start (In-Memory JSON)
 
 Add the dependency to your `Cargo.toml`:
 ```toml
@@ -34,7 +34,7 @@ tokio-events = "0.4.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
-Define an event, create the bus, and publish!
+Define an event, create the bus, and publish:
 
 ```rust
 use tokio_events::prelude::*;
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         println!("New user registered! Sending email to: {}", event.email);
     }).await?;
 
-    // 4. Publish the event (100% Lock-Free!)
+    // 4. Publish the event (Lock-Free)
     bus.publish(UserCreated {
         id: 42,
         email: "alice@example.com".to_string(),
@@ -68,9 +68,9 @@ async fn main() -> Result<()> {
 
 ---
 
-## 🛡️ Enterprise Reliability (Persistence, Idempotency, DLQ)
+## Enterprise Reliability (Persistence, Idempotency, DLQ)
 
-If your app crashes immediately after taking payment but before sending the `OrderConfirmed` event, you lose data. `tokio-events` solves this by natively integrating with `redb` (a pure-Rust embedded database) to implement the **Transactional Outbox Pattern**.
+To prevent data loss during application crashes (e.g. crashing immediately after taking payment but before emitting an `OrderConfirmed` event), `tokio-events` integrates natively with `redb` (a pure-Rust embedded database) to implement the **Transactional Outbox Pattern**.
 
 Enable the feature:
 ```toml
@@ -79,7 +79,7 @@ tokio-events = { version = "0.4.0", features = ["persistence"] }
 ```
 
 ### 1. Exactly-Once Delivery
-Use Idempotency Keys to prevent duplicate processing if upstream services accidentally double-publish:
+Use Idempotency Keys to prevent duplicate processing if upstream services double-publish events:
 
 ```rust
 let bus = EventBusBuilder::new().with_redb_path("events.db").build().await?;
@@ -87,24 +87,24 @@ let bus = EventBusBuilder::new().with_redb_path("events.db").build().await?;
 let metadata = EventMetadata::new()
     .with_idempotency_key("order_12345_payment_captured");
 
-// If this exact metadata is published twice, the second is instantly dropped!
+// If this exact metadata is published twice, the second is instantly dropped
 bus.publish_with_metadata(PaymentCaptured { id: 12345 }, metadata).await?;
 ```
 
 ### 2. Dead-Letter Queue (DLQ) Replay
-If a handler fails repeatedly, the event is safely moved to the Dead Letter Queue (`DLQ_TABLE`) rather than being dropped. After you push a hotfix to your production code, you can replay all failed events with a single command:
+If a handler fails repeatedly, the event is safely moved to the Dead Letter Queue (`DLQ_TABLE`) rather than being dropped. After deploying a fix, you can programmatically replay all failed events:
 
 ```rust
-// Rip all failed events out of the DLQ and process them again
+// Recover all failed events from the DLQ and process them again
 let recovered_count = bus.replay_dlq().await?;
-println!("Successfully recovered {} events!", recovered_count);
+println!("Successfully recovered {} events", recovered_count);
 ```
 
 ---
 
-## 🌍 Distributed Network (NATS JetStream)
+## Distributed Network (NATS JetStream)
 
-Want to route events across microservices? Enable the `remote` feature, derive the `Remote` trait, and `tokio-events` will automatically route your events over NATS JetStream.
+To route events across microservices, enable the `remote` feature and derive the `Remote` trait. `tokio-events` will automatically bridge your local event bus with the NATS JetStream cluster.
 
 ```mermaid
 graph LR
@@ -144,15 +144,15 @@ let bus = EventBusBuilder::new()
     .build()
     .await?;
 
-// This publishes to local subscribers AND the NATS network!
+// This publishes to local subscribers AND the NATS network
 bus.publish_remote(UserCreated { id: 42 }).await?;
 ```
 
 ---
 
-## 📦 Feature Flags
+## Feature Flags
 
-`tokio-events` uses feature flags to keep your binary size small. 
+`tokio-events` uses feature flags to minimize binary footprint.
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
@@ -164,8 +164,8 @@ bus.publish_remote(UserCreated { id: 42 }).await?;
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-We welcome community contributions! Please feel free to submit a Pull Request or open an Issue.
+We welcome community contributions. Please feel free to submit a Pull Request or open an Issue.
 
 **License:** MIT

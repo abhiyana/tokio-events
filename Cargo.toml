@@ -52,6 +52,7 @@ protobuf = ["dep:prost"]
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio-stream = "0.1.18"
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 [[example]]
 name = "03_persistent_queue"
@@ -60,3 +61,7 @@ required-features = ["persistence"]
 [[example]]
 name = "04_distributed_nats"
 required-features = ["remote"]
+
+[[bench]]
+name = "throughput"
+harness = false

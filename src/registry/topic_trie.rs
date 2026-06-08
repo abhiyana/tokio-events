@@ -6,12 +6,12 @@ use uuid::Uuid;
 /// Supports two types of wildcards (matching NATS syntax):
 /// - `*` matches exactly one token (e.g., `a.*.c` matches `a.b.c`)
 /// - `>` matches one or more trailing tokens (e.g., `a.>` matches `a.b`, `a.b.c`)
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TopicTrie {
     root: TrieNode,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct TrieNode {
     /// Subscriptions matching exactly at this node
     subscriptions: HashSet<Uuid>,

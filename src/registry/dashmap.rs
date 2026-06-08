@@ -4,7 +4,7 @@ use super::{topic_trie::TopicTrie, EventRegistry, SubscriptionEntry};
 use crate::{Error, Result};
 use dashmap::DashMap;
 use std::any::TypeId;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tracing::{debug, trace};
 use uuid::Uuid;
 
@@ -24,7 +24,7 @@ pub struct DashMapRegistry {
     name_to_type: Arc<DashMap<String, TypeId>>,
 
     /// Trie for topic-based routing and wildcard matching
-    topic_trie: Arc<RwLock<TopicTrie>>,
+    topic_trie: Arc<arc_swap::ArcSwap<TopicTrie>>,
 }
 
 impl DashMapRegistry {
@@ -34,7 +34,7 @@ impl DashMapRegistry {
             subscriptions: Arc::new(DashMap::new()),
             subscription_to_type: Arc::new(DashMap::new()),
             name_to_type: Arc::new(DashMap::new()),
-            topic_trie: Arc::new(RwLock::new(TopicTrie::new())),
+            topic_trie: Arc::new(arc_swap::ArcSwap::from_pointee(TopicTrie::new())),
         }
     }
 
@@ -44,7 +44,7 @@ impl DashMapRegistry {
             subscriptions: Arc::new(DashMap::with_capacity(capacity)),
             subscription_to_type: Arc::new(DashMap::with_capacity(capacity * 10)), // Assume ~10 subs per type
             name_to_type: Arc::new(DashMap::with_capacity(capacity)),
-            topic_trie: Arc::new(RwLock::new(TopicTrie::new())),
+            topic_trie: Arc::new(arc_swap::ArcSwap::from_pointee(TopicTrie::new())),
         }
     }
 }
@@ -81,10 +81,13 @@ impl EventRegistry for DashMapRegistry {
             .or_default()
             .push(subscription.clone());
 
-        // Add to topic trie
+        // Add to topic trie (Lock-Free RCU pattern)
         if let Some(topic) = &subscription.topic {
-            let mut trie = self.topic_trie.write().unwrap();
-            trie.insert(topic, subscription.id);
+            self.topic_trie.rcu(|trie| {
+                let mut new_trie = (**trie).clone();
+                new_trie.insert(topic, subscription.id);
+                new_trie
+            });
         }
 
         debug!(
@@ -121,9 +124,12 @@ impl EventRegistry for DashMapRegistry {
             }
         }
 
-        // Remove from topic trie
-        let mut trie = self.topic_trie.write().unwrap();
-        trie.remove(subscription_id);
+        // Remove from topic trie (Lock-Free RCU pattern)
+        self.topic_trie.rcu(|trie| {
+            let mut new_trie = (**trie).clone();
+            new_trie.remove(subscription_id);
+            new_trie
+        });
 
         debug!(subscription_id = %subscription_id, "Subscription unregistered");
 
@@ -142,7 +148,7 @@ impl EventRegistry for DashMapRegistry {
 
     /// Get all active subscriptions that match the specific literal topic
     fn get_topic_subscriptions(&self, literal_topic: &str) -> Vec<SubscriptionEntry> {
-        let trie = self.topic_trie.read().unwrap();
+        let trie = self.topic_trie.load();
         let matching_ids = trie.match_topic(literal_topic);
 
         if matching_ids.is_empty() {
@@ -232,8 +238,7 @@ impl EventRegistry for DashMapRegistry {
         self.subscription_to_type.clear();
         self.name_to_type.clear();
 
-        let mut trie = self.topic_trie.write().unwrap();
-        *trie = TopicTrie::new();
+        self.topic_trie.store(Arc::new(TopicTrie::new()));
     }
 
     fn get_type_id(&self, type_name: &str) -> Option<TypeId> {

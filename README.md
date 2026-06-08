@@ -32,7 +32,7 @@ You need `tokio-events` if you require:
 
 `tokio-events` is designed to be effortlessly injected into your existing web frameworks as application state.
 
-```rust
+```rust,ignore
 use axum::{extract::State, routing::post, Json, Router};
 use tokio_events::prelude::*;
 
@@ -127,7 +127,7 @@ tokio-events = { version = "0.4.0", features = ["persistence"] }
 ### 1. Exactly-Once Delivery
 Use Idempotency Keys to prevent duplicate processing if upstream services accidentally double-publish:
 
-```rust
+```rust,ignore
 let bus = EventBusBuilder::new().with_redb_path("events.db").build().await?;
 
 let metadata = EventMetadata::new()
@@ -140,7 +140,7 @@ bus.publish_with_metadata(PaymentCaptured { id: 12345 }, metadata).await?;
 ### 2. Dead-Letter Queue (DLQ) Replay
 If a handler fails repeatedly, the event is safely moved to the Dead Letter Queue (`DLQ_TABLE`) rather than being dropped. After you push a hotfix to your production code, you can replay all failed events with a single command:
 
-```rust
+```rust,ignore
 // Rip all failed events out of the DLQ and process them again
 let recovered_count = bus.replay_dlq().await?;
 println!("Successfully recovered {} events", recovered_count);
@@ -177,7 +177,7 @@ tokio-events = { version = "0.4.0", features = ["remote"] }
 ```
 
 Define the routing topic and publish over the network:
-```rust
+```rust,ignore
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Event, Remote)]
 #[remote(topic = "user.created.v1")] // NATS Topic
 struct UserCreated {

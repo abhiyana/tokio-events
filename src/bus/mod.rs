@@ -120,6 +120,23 @@ impl EventBus {
             .await
     }
 
+    /// Replay permanently failed events from the Dead Letter Queue.
+    ///
+    /// This method will read all events stored in the DLQ table, remove them,
+    /// and push them back into the event dispatcher to be processed again.
+    /// This is incredibly useful for recovering from temporary outages or buggy handlers.
+    ///
+    /// Only works if persistence is enabled.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of events that were replayed from the DLQ.
+    pub async fn replay_dlq(&self) -> Result<usize> {
+        let guard = self.dispatcher.read().await;
+        let dispatcher = guard.as_ref().ok_or(Error::ShuttingDown)?;
+        dispatcher.replay_dlq().await
+    }
+
     /// Publish an event with custom metadata.
     ///
     /// This allows you to attach vital contextual information to the event envelope

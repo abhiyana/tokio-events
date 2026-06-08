@@ -42,6 +42,9 @@ pub struct EventMetadata {
 
     /// Optional reply-to topic for Request-Reply (RPC) correlation
     pub reply_to: Option<String>,
+
+    /// Unique key to guarantee exactly-once delivery
+    pub idempotency_key: Option<String>,
 }
 
 impl EventMetadata {
@@ -59,6 +62,7 @@ impl EventMetadata {
             deliver_at: None,
             topic: None,
             reply_to: None,
+            idempotency_key: None,
         }
     }
 
@@ -144,6 +148,12 @@ impl EventMetadata {
     /// Set a reply-to topic for Request-Reply (RPC) pattern
     pub fn with_reply_to(mut self, reply_to: impl Into<String>) -> Self {
         self.reply_to = Some(reply_to.into());
+        self
+    }
+
+    /// Set an idempotency key for Exactly-Once delivery guarantees.
+    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
         self
     }
 
@@ -258,6 +268,12 @@ impl MetadataBuilder {
     /// Set a custom topic for Subject-Based routing
     pub fn topic(mut self, topic: impl Into<String>) -> Self {
         self.metadata.topic = Some(topic.into());
+        self
+    }
+
+    /// Set an idempotency key for Exactly-Once delivery guarantees.
+    pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.metadata.idempotency_key = Some(key.into());
         self
     }
 

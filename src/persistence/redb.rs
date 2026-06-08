@@ -1015,7 +1015,7 @@ mod tests {
         write_txn.commit().unwrap();
 
         // Ack once (should drop refcount to 1, but not delete event)
-        registry.ack_tx.send(id1).unwrap();
+        registry.ack_tx.send((id1, true)).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // give background task time to run
 
         let read_txn = db.begin_read().unwrap();
@@ -1030,7 +1030,7 @@ mod tests {
         drop(read_txn);
 
         // Ack twice (should drop refcount to 0, and DELETE event)
-        registry.ack_tx.send(id1).unwrap();
+        registry.ack_tx.send((id1, true)).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let read_txn = db.begin_read().unwrap();

@@ -23,6 +23,9 @@ pub struct DashMapRegistry {
     /// Map from event type_name to TypeId for persistence recovery
     name_to_type: Arc<DashMap<String, TypeId>>,
 
+    /// Reverse index: subscription ID -> topic pattern (for O(1) trie removal)
+    subscription_to_topic: Arc<DashMap<Uuid, String>>,
+
     /// Trie for topic-based routing and wildcard matching
     topic_trie: Arc<arc_swap::ArcSwap<TopicTrie>>,
 }
@@ -34,6 +37,7 @@ impl DashMapRegistry {
             subscriptions: Arc::new(DashMap::new()),
             subscription_to_type: Arc::new(DashMap::new()),
             name_to_type: Arc::new(DashMap::new()),
+            subscription_to_topic: Arc::new(DashMap::new()),
             topic_trie: Arc::new(arc_swap::ArcSwap::from_pointee(TopicTrie::new())),
         }
     }
@@ -44,6 +48,7 @@ impl DashMapRegistry {
             subscriptions: Arc::new(DashMap::with_capacity(capacity)),
             subscription_to_type: Arc::new(DashMap::with_capacity(capacity * 10)), // Assume ~10 subs per type
             name_to_type: Arc::new(DashMap::with_capacity(capacity)),
+            subscription_to_topic: Arc::new(DashMap::with_capacity(capacity * 10)),
             topic_trie: Arc::new(arc_swap::ArcSwap::from_pointee(TopicTrie::new())),
         }
     }
@@ -74,6 +79,12 @@ impl EventRegistry for DashMapRegistry {
 
         // Store the string name to TypeId mapping
         self.name_to_type.insert(type_name.to_string(), event_type);
+
+        // Store topic for reverse index (if present)
+        if let Some(topic) = &subscription.topic {
+            self.subscription_to_topic
+                .insert(subscription.id, topic.clone());
+        }
 
         // Add to subscriptions list
         self.subscriptions
@@ -113,6 +124,22 @@ impl EventRegistry for DashMapRegistry {
                 id: subscription_id,
             })?;
 
+        // Remove from topic trie using reverse index (O(1) instead of full trie scan)
+        if let Some((_, topic)) = self.subscription_to_topic.remove(&subscription_id) {
+            self.topic_trie.rcu(|trie| {
+                let mut new_trie = (**trie).clone();
+                new_trie.remove_topic(&topic, subscription_id);
+                new_trie
+            });
+        } else {
+            // Fallback for subscriptions without topic (shouldn't happen, but safe)
+            self.topic_trie.rcu(|trie| {
+                let mut new_trie = (**trie).clone();
+                new_trie.remove(subscription_id);
+                new_trie
+            });
+        }
+
         // Remove from subscriptions list
         if let Some(mut subs) = self.subscriptions.get_mut(&event_type) {
             subs.retain(|s| s.id != subscription_id);
@@ -123,13 +150,6 @@ impl EventRegistry for DashMapRegistry {
                 self.subscriptions.remove(&event_type);
             }
         }
-
-        // Remove from topic trie (Lock-Free RCU pattern)
-        self.topic_trie.rcu(|trie| {
-            let mut new_trie = (**trie).clone();
-            new_trie.remove(subscription_id);
-            new_trie
-        });
 
         debug!(subscription_id = %subscription_id, "Subscription unregistered");
 

@@ -38,7 +38,7 @@ pub mod remote;
 
 // Re-export commonly used types
 pub use bus::{EventBus, EventBusBuilder};
-pub use error::{Error, Result};
+pub use error::{Error, Result, TryPublishError};
 pub use event::{Event, EventEnvelope, EventMetadata, EventPriority, HasPriority};
 
 #[cfg(feature = "remote")]

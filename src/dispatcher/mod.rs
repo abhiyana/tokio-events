@@ -3,7 +3,7 @@
 //! The dispatcher is responsible for receiving events from publishers
 //! and routing them to the appropriate handlers via the subscription manager.
 
-use crate::{EventEnvelope, Result};
+use crate::{EventEnvelope, Result, TryPublishError};
 use async_trait::async_trait;
 
 pub mod channel;
@@ -29,8 +29,16 @@ pub trait EventDispatcher: Send + Sync {
         self.stop().await
     }
 
-    /// Dispatch an event
+    /// Dispatch an event (blocking if queue is full and drop_on_full is false)
     async fn dispatch(&self, envelope: EventEnvelope) -> Result<()>;
+
+    /// Try to dispatch an event without blocking.
+    ///
+    /// Returns `Ok(())` if the event was accepted, or `TryPublishError` if:
+    /// - The queue is full (backpressure)
+    /// - The dispatcher is shutting down
+    /// - The dispatcher is not running
+    async fn try_dispatch(&self, envelope: EventEnvelope) -> std::result::Result<(), TryPublishError>;
 
     /// Replay pending persisted events (for persistent dispatchers)
     async fn replay_pending(&self) -> Result<()> {
@@ -197,6 +205,10 @@ impl EventDispatcher for NoOpDispatcher {
     }
 
     async fn dispatch(&self, _envelope: EventEnvelope) -> Result<()> {
+        Ok(())
+    }
+
+    async fn try_dispatch(&self, _envelope: EventEnvelope) -> std::result::Result<(), TryPublishError> {
         Ok(())
     }
 

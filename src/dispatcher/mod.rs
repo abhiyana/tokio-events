@@ -8,9 +8,11 @@ use async_trait::async_trait;
 
 pub mod channel;
 pub mod worker;
+pub mod retry;
 
 pub use channel::ChannelDispatcher;
 pub use worker::{WorkerConfig, WorkerPool};
+pub use retry::{RetryPolicy, ExponentialBackoff, FixedDelay, NoRetry, CircuitBreaker, CircuitState, DeadLetterQueue, InMemoryDlq, RetryConfig};
 
 /// Trait for event dispatchers.
 ///

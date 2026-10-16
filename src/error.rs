@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Main error type for tokio-events
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum Error {
     /// Event publishing failed
     #[error("Failed to publish event: {0}")]

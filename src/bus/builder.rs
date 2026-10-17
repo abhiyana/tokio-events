@@ -1,6 +1,7 @@
 //! Builder pattern for constructing EventBus instances.
 
 use crate::bus::config::EventBusConfig;
+use crate::bus::ShutdownState;
 use crate::dispatcher::{ChannelDispatcher, EventDispatcher};
 use crate::registry::{DashMapRegistry, EventRegistry};
 use crate::subscription::SubscriptionManager;
@@ -564,7 +565,7 @@ impl EventBusBuilder {
             subscription_manager,
             dispatcher: Arc::new(tokio::sync::RwLock::new(Some(dispatcher))),
             shutdown_hooks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_state: Arc::new(std::sync::atomic::AtomicU8::new(ShutdownState::Running as u8)),
             dlq_rx: Arc::new(tokio::sync::Mutex::new(dlq_rx_opt)),
 
             #[cfg(feature = "remote")]

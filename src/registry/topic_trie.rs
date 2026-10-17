@@ -56,7 +56,43 @@ impl TopicTrie {
         current.subscriptions.insert(subscription_id);
     }
 
-    /// Remove a subscription from the trie
+    /// Remove a subscription from the trie using a known topic pattern.
+    /// This is O(depth) instead of O(N) for the full scan.
+    pub(crate) fn remove_topic(&mut self, topic_pattern: &str, subscription_id: Uuid) -> bool {
+        let tokens: Vec<&str> = topic_pattern.split('.').collect();
+        Self::remove_topic_recursive(&mut self.root, &tokens, 0, subscription_id)
+    }
+
+    fn remove_topic_recursive(
+        node: &mut TrieNode,
+        tokens: &[&str],
+        depth: usize,
+        subscription_id: Uuid,
+    ) -> bool {
+        if depth >= tokens.len() {
+            return node.subscriptions.remove(&subscription_id);
+        }
+
+        let token = tokens[depth];
+        let mut found = false;
+
+        if token == ">" {
+            if let Some(ref mut child) = node.trailing_child {
+                found = Self::remove_topic_recursive(child, tokens, depth + 1, subscription_id);
+            }
+        } else if token == "*" {
+            if let Some(ref mut child) = node.any_child {
+                found = Self::remove_topic_recursive(child, tokens, depth + 1, subscription_id);
+            }
+        } else if let Some(child) = node.children.get_mut(token) {
+            found = Self::remove_topic_recursive(child, tokens, depth + 1, subscription_id);
+        }
+
+        // Clean up empty nodes (optional optimization)
+        found
+    }
+
+    /// Remove a subscription from the trie (fallback full scan)
     /// Note: This does a full scan since we don't know the exact topic pattern it used.
     /// In a real enterprise system, we'd map Uuid -> TopicPattern to optimize removal.
     pub(crate) fn remove(&mut self, subscription_id: Uuid) -> bool {

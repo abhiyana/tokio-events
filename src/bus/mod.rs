@@ -6,13 +6,36 @@
 use crate::dispatcher::EventDispatcher;
 use crate::registry::EventRegistry;
 use crate::subscription::{EventHandler, SubscriptionHandle, SubscriptionManager};
-use crate::{Error, Event, EventEnvelope, EventMetadata, Result};
+use crate::{Error, Event, EventEnvelope, EventMetadata, Result, TryPublishError};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
+
+/// Shutdown state machine for the EventBus
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum ShutdownState {
+    /// Normal operation - accepting publishes
+    Running = 0,
+    /// Graceful shutdown initiated - draining queues, rejecting new publishes
+    Draining = 1,
+    /// Shutdown complete - all components stopped
+    Stopped = 2,
+}
+
+impl ShutdownState {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => ShutdownState::Running,
+            1 => ShutdownState::Draining,
+            2 => ShutdownState::Stopped,
+            _ => ShutdownState::Stopped,
+        }
+    }
+}
 
 pub mod builder;
 pub mod config;
@@ -72,7 +95,8 @@ pub struct EventBus {
     pub(crate) subscription_manager: Arc<SubscriptionManager>,
     pub(crate) dispatcher: Arc<tokio::sync::RwLock<Option<Box<dyn EventDispatcher>>>>,
     pub(crate) shutdown_hooks: Arc<Mutex<Vec<ShutdownHook>>>,
-    pub(crate) is_shutting_down: Arc<AtomicBool>,
+    /// Shutdown state machine: 0=Running, 1=Draining, 2=Stopped
+    pub(crate) shutdown_state: Arc<AtomicU8>,
     pub(crate) dlq_rx:
         Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Arc<EventEnvelope>>>>>,
 
@@ -120,6 +144,92 @@ impl EventBus {
             .await
     }
 
+    /// Try to publish an event without blocking.
+    ///
+    /// This is a non-blocking version of `publish` that returns immediately with a
+    /// `TryPublishError` if the dispatcher queue is full (backpressure) or if the
+    /// bus is shutting down.
+    ///
+    /// This is useful for high-throughput scenarios where you want to apply backpressure
+    /// to the caller rather than blocking indefinitely.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// match bus.try_publish(UserCreated { id: 101 }).await {
+    ///     Ok(event_id) => println!("Published: {}", event_id),
+    ///     Err(TryPublishError::Backpressure) => {
+    ///         // Queue is full, apply backpressure (e.g., wait and retry)
+    ///         tokio::time::sleep(Duration::from_millis(10)).await;
+    ///     }
+    ///     Err(TryPublishError::ShuttingDown) => {
+    ///         // Bus is shutting down
+    ///     }
+    ///     Err(TryPublishError::NotRunning) => {
+    ///         // Dispatcher not running
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `TryPublishError` if:
+    /// - The dispatcher queue is full (backpressure)
+    /// - The event bus is shutting down
+    /// - The dispatcher is not running
+    pub async fn try_publish<T: Event>(&self, event: T) -> std::result::Result<Uuid, TryPublishError> {
+        self.try_publish_with_metadata(event, EventMetadata::new()).await
+    }
+
+    /// Try to publish an event with custom metadata without blocking.
+    ///
+    /// Non-blocking version of `publish_with_metadata`.
+    pub async fn try_publish_with_metadata<T: Event>(
+        &self,
+        event: T,
+        metadata: EventMetadata,
+    ) -> std::result::Result<Uuid, TryPublishError> {
+        // Check shutdown state FIRST - before any allocation
+        let state = ShutdownState::from_u8(self.shutdown_state.load(Ordering::Acquire));
+        if state != ShutdownState::Running {
+            return Err(TryPublishError::ShuttingDown);
+        }
+
+        let event_id = metadata.event_id;
+
+        trace!(
+            event_id = %event_id,
+            event_type = T::event_type(),
+            "Publishing event (try)"
+        );
+
+        let envelope = EventEnvelope::with_metadata(event, metadata);
+
+        // Try to dispatch the event
+        let guard = self.dispatcher.read().await;
+        let dispatcher = guard.as_ref().ok_or(TryPublishError::ShuttingDown)?;
+
+        // Double-check shutdown state after acquiring lock
+        let state = ShutdownState::from_u8(self.shutdown_state.load(Ordering::Acquire));
+        if state != ShutdownState::Running {
+            return Err(TryPublishError::ShuttingDown);
+        }
+
+        dispatcher.try_dispatch(envelope).await?;
+
+        debug!(
+            event_id = %event_id,
+            event_type = T::event_type(),
+            "Event published successfully (try)"
+        );
+
+        #[cfg(feature = "metrics")]
+        metrics::counter!("tokio_events_published_total", "type" => T::event_type().to_string())
+            .increment(1);
+
+        Ok(event_id)
+    }
+
     /// Replay permanently failed events from the Dead Letter Queue.
     ///
     /// This method will read all events stored in the DLQ table, remove them,
@@ -164,7 +274,10 @@ impl EventBus {
         event: T,
         metadata: EventMetadata,
     ) -> Result<Uuid> {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        // Check shutdown state FIRST - before any allocation
+        // This is the linearization point for publish vs shutdown
+        let state = ShutdownState::from_u8(self.shutdown_state.load(Ordering::Acquire));
+        if state != ShutdownState::Running {
             return Err(Error::ShuttingDown);
         }
 
@@ -178,10 +291,17 @@ impl EventBus {
 
         let envelope = EventEnvelope::with_metadata(event, metadata);
 
-        // Dispatch the event
+        // Dispatch the event - check dispatcher exists under lock
         {
             let guard = self.dispatcher.read().await;
             let dispatcher = guard.as_ref().ok_or(Error::ShuttingDown)?;
+            
+            // Double-check shutdown state after acquiring lock (linearization point)
+            let state = ShutdownState::from_u8(self.shutdown_state.load(Ordering::Acquire));
+            if state != ShutdownState::Running {
+                return Err(Error::ShuttingDown);
+            }
+            
             dispatcher.dispatch(envelope).await?;
         }
 
@@ -302,7 +422,7 @@ impl EventBus {
         F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        if self.is_shutting_down() {
             return Err(Error::ShuttingDown);
         }
 
@@ -349,7 +469,7 @@ impl EventBus {
         F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        if self.is_shutting_down() {
             return Err(Error::ShuttingDown);
         }
 
@@ -381,7 +501,7 @@ impl EventBus {
         Req: Event,
         Res: Event,
     {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        if self.is_shutting_down() {
             return Err(Error::ShuttingDown);
         }
 
@@ -456,7 +576,7 @@ impl EventBus {
         F: Fn(Req) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Res> + Send + 'static,
     {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        if self.is_shutting_down() {
             return Err(Error::ShuttingDown);
         }
 
@@ -506,7 +626,7 @@ impl EventBus {
         F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        if self.is_shutting_down() {
             return Err(Error::ShuttingDown);
         }
 
@@ -548,7 +668,7 @@ impl EventBus {
         T: Event,
         H: EventHandler,
     {
-        if self.is_shutting_down.load(Ordering::SeqCst) {
+        if self.is_shutting_down() {
             return Err(Error::ShuttingDown);
         }
 
@@ -871,9 +991,16 @@ impl EventBus {
     ///
     /// # Returns
     ///
-    /// Returns `true` if shutting down, `false` otherwise.
+    /// Returns `true` if shutting down (Draining or Stopped), `false` otherwise (Running).
     pub fn is_shutting_down(&self) -> bool {
-        self.is_shutting_down.load(Ordering::SeqCst)
+        let state = ShutdownState::from_u8(self.shutdown_state.load(Ordering::SeqCst));
+        state != ShutdownState::Running
+    }
+
+    /// Check if the event bus is currently running (accepting publishes).
+    pub fn is_running(&self) -> bool {
+        let state = ShutdownState::from_u8(self.shutdown_state.load(Ordering::SeqCst));
+        state == ShutdownState::Running
     }
 
     /// Shutdown the event bus abruptly.
@@ -886,8 +1013,9 @@ impl EventBus {
     pub async fn shutdown(&self) -> Result<()> {
         info!("Shutting down EventBus (abruptly)");
 
-        // Mark as shutting down
-        self.is_shutting_down.store(true, Ordering::SeqCst);
+        // Transition to Draining state (rejects new publishes)
+        // Uses Release to synchronize with publish's Acquire loads
+        self.shutdown_state.store(ShutdownState::Draining as u8, Ordering::Release);
 
         // Run shutdown hooks
         let hooks = self.shutdown_hooks.lock().await;
@@ -915,6 +1043,9 @@ impl EventBus {
         // Shutdown subscription manager
         self.subscription_manager.shutdown().await?;
 
+        // Mark as fully stopped
+        self.shutdown_state.store(ShutdownState::Stopped as u8, Ordering::Release);
+
         info!("EventBus abrupt shutdown complete");
         Ok(())
     }
@@ -922,7 +1053,7 @@ impl EventBus {
     /// Shut down the event bus gracefully.
     ///
     /// This method performs an orchestrated shutdown:
-    /// 1. Sets the shutting down flag to reject new `publish()` calls.
+    /// 1. Transitions to Draining state to reject new `publish()` calls.
     /// 2. Executes all registered shutdown hooks concurrently.
     /// 3. Signals the dispatcher to finish processing currently queued events (waiting up to `shutdown_timeout`).
     /// 4. Shuts down the subscription manager and waits for handlers to finish their active futures.
@@ -941,8 +1072,9 @@ impl EventBus {
     pub async fn shutdown_gracefully(&self) -> Result<()> {
         info!("Shutting down EventBus gracefully");
 
-        // Mark as shutting down, preventing new publishes
-        self.is_shutting_down.store(true, Ordering::SeqCst);
+        // Transition to Draining state - prevents new publishes
+        // Uses Release to synchronize with publish's Acquire loads
+        self.shutdown_state.store(ShutdownState::Draining as u8, Ordering::Release);
 
         // Run shutdown hooks
         let hooks = self.shutdown_hooks.lock().await;
@@ -965,6 +1097,9 @@ impl EventBus {
 
         // Wait for subscription manager to finish processing handler tasks
         self.subscription_manager.shutdown_gracefully().await;
+
+        // Mark as fully stopped
+        self.shutdown_state.store(ShutdownState::Stopped as u8, Ordering::Release);
 
         info!("EventBus graceful shutdown complete");
         Ok(())

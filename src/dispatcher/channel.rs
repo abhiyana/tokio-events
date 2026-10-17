@@ -2,7 +2,7 @@
 
 use super::{DispatcherConfig, DispatcherStats, EventDispatcher};
 use crate::subscription::SubscriptionManager;
-use crate::{Error, EventEnvelope, Result};
+use crate::{Error, EventEnvelope, Result, TryPublishError};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -284,6 +284,51 @@ impl EventDispatcher for ChannelDispatcher {
             match sender.send(envelope).await {
                 Ok(()) => Ok(()),
                 Err(_) => Err(Error::internal("Event channel closed")),
+            }
+        }
+    }
+
+    /// Try to dispatch an event without blocking.
+    ///
+    /// Returns `Ok(())` if the event was accepted, or `TryPublishError` if:
+    /// - The queue is full (backpressure)
+    /// - The dispatcher is shutting down
+    /// - The dispatcher is not running
+    async fn try_dispatch(&self, envelope: EventEnvelope) -> std::result::Result<(), TryPublishError> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(TryPublishError::NotRunning);
+        }
+
+        // If the event is scheduled for the future, we can't use try_send
+        // because we'd need to spawn a task. Fall back to regular dispatch behavior
+        // but check if we're shutting down.
+        if envelope.metadata.deliver_at.is_some() {
+            // For scheduled events, we need to use the regular path
+            // but we can at least check if we're shutting down
+            return Err(TryPublishError::Backpressure);
+        }
+
+        let envelope = Arc::new(envelope);
+
+        let sender = self.sender.as_ref().ok_or(TryPublishError::ShuttingDown)?;
+
+        // Update max queue size
+        let current_size = sender.max_capacity().saturating_sub(sender.capacity());
+        let max_size = self.max_queue_size.load(Ordering::Relaxed);
+        if current_size as u64 > max_size {
+            self.max_queue_size
+                .store(current_size as u64, Ordering::Relaxed);
+        }
+
+        // Use try_send for non-blocking behavior
+        match sender.try_send(envelope) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dispatch_errors.fetch_add(1, Ordering::Relaxed);
+                Err(TryPublishError::Backpressure)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(TryPublishError::ShuttingDown)
             }
         }
     }

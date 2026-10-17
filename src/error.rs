@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Main error type for tokio-events
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum Error {
     /// Event publishing failed
     #[error("Failed to publish event: {0}")]
@@ -49,6 +49,10 @@ pub enum Error {
     #[error("Event bus is shutting down")]
     ShuttingDown,
 
+    /// Backpressure: dispatcher queue is full and cannot accept more events
+    #[error("Backpressure: dispatcher queue is full, cannot accept more events")]
+    Backpressure,
+
     /// Channel send error
     #[error("Failed to send through channel")]
     ChannelSendError,
@@ -81,6 +85,11 @@ impl Error {
         Error::HandlerError(msg.into())
     }
 
+    /// Create a new backpressure error
+    pub fn backpressure() -> Self {
+        Error::Backpressure
+    }
+
     /// Check if this error indicates the system is shutting down
     pub fn is_shutdown(&self) -> bool {
         matches!(self, Error::ShuttingDown)
@@ -89,6 +98,49 @@ impl Error {
     /// Check if this is a channel-related error
     pub fn is_channel_error(&self) -> bool {
         matches!(self, Error::ChannelSendError | Error::ChannelReceiveError)
+    }
+
+    /// Check if this is a backpressure error
+    pub fn is_backpressure(&self) -> bool {
+        matches!(self, Error::Backpressure)
+    }
+}
+
+/// Error type for try_publish operations that don't block
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryPublishError {
+    /// The event bus is shutting down
+    #[error("Event bus is shutting down")]
+    ShuttingDown,
+
+    /// The dispatcher queue is full (backpressure)
+    #[error("Backpressure: dispatcher queue is full")]
+    Backpressure,
+
+    /// The dispatcher is not running
+    #[error("Dispatcher not running")]
+    NotRunning,
+}
+
+impl TryPublishError {
+    /// Check if this error indicates the system is shutting down
+    pub fn is_shutdown(&self) -> bool {
+        matches!(self, TryPublishError::ShuttingDown)
+    }
+
+    /// Check if this is a backpressure error
+    pub fn is_backpressure(&self) -> bool {
+        matches!(self, TryPublishError::Backpressure)
+    }
+}
+
+impl From<TryPublishError> for Error {
+    fn from(err: TryPublishError) -> Self {
+        match err {
+            TryPublishError::ShuttingDown => Error::ShuttingDown,
+            TryPublishError::Backpressure => Error::Backpressure,
+            TryPublishError::NotRunning => Error::Internal("Dispatcher not running".to_string()),
+        }
     }
 }
 

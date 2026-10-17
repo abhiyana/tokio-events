@@ -38,8 +38,9 @@ pub mod remote;
 
 // Re-export commonly used types
 pub use bus::{EventBus, EventBusBuilder};
-pub use error::{Error, Result};
+pub use error::{Error, Result, TryPublishError};
 pub use event::{Event, EventEnvelope, EventMetadata, EventPriority, HasPriority};
+pub use dispatcher::{RetryPolicy, ExponentialBackoff, FixedDelay, NoRetry, CircuitBreaker, DeadLetterQueue, InMemoryDlq, RetryConfig};
 
 #[cfg(feature = "remote")]
 #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]

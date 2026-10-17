@@ -160,7 +160,6 @@ pub trait Remote: Event {
 
 #[cfg(test)]
 mod tests {
-    extern crate self as tokio_events;
     use super::*;
     use crate::event;
 

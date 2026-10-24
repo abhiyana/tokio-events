@@ -1876,6 +1876,7 @@ dependencies = [
  "metrics",
  "num_cpus",
  "prost",
+ "rand 0.8.6",
  "redb",
  "serde",
  "serde_json",

@@ -4,7 +4,7 @@ use crate::dispatcher::{DispatcherConfig, DispatcherStats, EventDispatcher};
 use crate::event::EventEnvelope;
 use crate::registry::{DashMapRegistry, EventRegistry, SubscriptionEntry};
 use crate::subscription::SubscriptionManager;
-use crate::{Error, Result};
+use crate::{Error, Result, TryPublishError};
 use async_trait::async_trait;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::any::TypeId;
@@ -720,6 +720,48 @@ impl EventDispatcher for RedbDispatcher {
                     .send(msg)
                     .await
                     .map_err(|_| Error::internal("Channel closed"))
+            }
+        }
+    }
+
+    /// Try to dispatch an event without blocking.
+    ///
+    /// Returns `Ok(())` if the event was accepted, or `TryPublishError` if:
+    /// - The queue is full (backpressure)
+    /// - The dispatcher is shutting down
+    /// - The dispatcher is not running
+    async fn try_dispatch(&self, envelope: EventEnvelope) -> std::result::Result<(), TryPublishError> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err(TryPublishError::NotRunning);
+        }
+
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or(TryPublishError::NotRunning)?;
+
+        let current_size = sender.max_capacity().saturating_sub(sender.capacity());
+        let max_size = self.max_queue_size.load(Ordering::Relaxed);
+        if current_size as u64 > max_size {
+            self.max_queue_size
+                .store(current_size as u64, Ordering::Relaxed);
+        }
+
+        // For RedbDispatcher, we don't wait for persistence in try_dispatch
+        // Just try to send to the channel
+        let msg = RedbDispatcherMessage {
+            envelope: Arc::new(envelope),
+            ack_tx: None,
+        };
+
+        match sender.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dispatch_errors.fetch_add(1, Ordering::Relaxed);
+                Err(TryPublishError::Backpressure)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(TryPublishError::ShuttingDown)
             }
         }
     }

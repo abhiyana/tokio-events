@@ -15,12 +15,7 @@ exclude = [
     "demo-shared/**/*"
 ]
 [workspace]
-members = [
-    "tokio-events-macros",
-    "demo-shared",
-    "demo-api-gateway",
-    "demo-backend-worker"
-]
+members = ["tokio-events-macros"]
 
 [dependencies]
 tokio = { version = "1.46.1", features = ["full"] }

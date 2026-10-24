@@ -36,9 +36,7 @@ pub trait Event: Send + Sync + Clone + Debug + 'static {
     ///
     /// This is used for debugging and logging purposes.
     /// It should be a stable, unique identifier for the event type.
-    fn event_type() -> &'static str
-    where
-        Self: Sized;
+    fn event_type() -> &'static str;
 
     /// Serialize the event to raw bytes (e.g., JSON or Protobuf)
     fn serialize_event(&self) -> crate::Result<Vec<u8>>;
@@ -51,10 +49,7 @@ pub trait Event: Send + Sync + Clone + Debug + 'static {
     /// Get the TypeId for this event type.
     ///
     /// This is used internally for type-safe event routing.
-    fn type_id() -> TypeId
-    where
-        Self: Sized,
-    {
+    fn type_id() -> TypeId {
         TypeId::of::<Self>()
     }
 
